@@ -17,8 +17,10 @@ import threading
 import time
 
 from agents.common import AgentClient
+from core.config import settings
 
 log = logging.getLogger("router-agent")
+FULL_ACCESS = settings.access_mode == "full"
 
 TEMPLATES: dict[str, dict[str, str]] = {
     "openwrt": {
@@ -197,12 +199,59 @@ def router_reboot(_args: dict) -> dict:
     return {"rebooting": True, "at": time.strftime("%H:%M:%S")}
 
 
+def exec_run(args: dict) -> dict:
+    """Произвольная команда на роутере по SSH (только полный режим)."""
+    if not FULL_ACCESS:
+        raise PermissionError("exec.run доступен только при ACCESS_MODE=full")
+    command = str(args["command"]).strip()
+    if not command:
+        raise ValueError("пустая команда")
+    output = router.run(command)
+    return {"command": command, "stdout": output[:64_000],
+            "truncated": len(output) > 64_000}
+
+
+def fs_write(args: dict) -> dict:
+    if not FULL_ACCESS:
+        raise PermissionError("fs.write доступен только при ACCESS_MODE=full")
+    import base64 as _b64
+    path = str(args["path"])
+    text = str(args["text"])
+    op = ">>" if args.get("append") else ">"
+    payload = _b64.b64encode(text.encode("utf-8")).decode("ascii")
+    router.run(f"mkdir -p \"$(dirname '{path}')\" 2>/dev/null; "
+               f"echo '{payload}' | base64 -d {op} '{path}'")
+    return {"path": path, "bytes": len(text.encode("utf-8")),
+            "mode": "append" if args.get("append") else "overwrite"}
+
+
+def fs_delete(args: dict) -> dict:
+    if not FULL_ACCESS:
+        raise PermissionError("fs.delete доступен только при ACCESS_MODE=full")
+    path = str(args["path"])
+    flag = "-rf" if args.get("recursive") else "-f"
+    router.run(f"rm {flag} '{path}'")
+    return {"deleted": path}
+
+
+def fs_mkdir(args: dict) -> dict:
+    if not FULL_ACCESS:
+        raise PermissionError("fs.mkdir доступен только при ACCESS_MODE=full")
+    path = str(args["path"])
+    router.run(f"mkdir -p '{path}'")
+    return {"created": path}
+
+
 HANDLERS = {
     "net.status": net_status,
     "router.clients": router_clients,
     "router.wifi": router_wifi,
     "router.kick": router_kick,
     "router.reboot": router_reboot,
+    "exec.run": exec_run,
+    "fs.write": fs_write,
+    "fs.delete": fs_delete,
+    "fs.mkdir": fs_mkdir,
 }
 
 

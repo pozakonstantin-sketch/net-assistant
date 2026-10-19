@@ -232,7 +232,8 @@ async def android_bundle(token: str = "") -> Response:
 async def devices() -> dict:
     return {
         "devices": [
-            {**d.public(), "available_actions": catalog.for_device(d.platform, d.actions)}
+            {**d.public(), "available_actions": catalog.for_device(
+                d.platform, d.actions, full_access=settings.access_mode == "full")}
             for d in hub.devices.values()
         ]
     }
@@ -243,6 +244,7 @@ async def actions() -> dict:
     return {
         name: {"desc": entry.get("desc"), "args": entry.get("args", {}),
                "dangerous": bool(entry.get("dangerous")),
+               "full_only": bool(entry.get("full_only")),
                "devices": entry.get("devices", [])}
         for name, entry in sorted(catalog.CATALOG.items())
     }

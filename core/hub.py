@@ -97,6 +97,10 @@ class Hub:
             raise ValueError(f"устройство «{device_id}» не поддерживает «{action}»")
         if action not in device.actions:
             raise ValueError(f"агент «{device_id}» не умеет «{action}»")
+        if entry.get("full_only") and settings.access_mode != "full":
+            raise ValueError(
+                f"команда «{action}» доступна только при ACCESS_MODE=full"
+            )
 
         clean_args = validate_args(entry["args"], args)
 
@@ -139,9 +143,10 @@ class Hub:
 
     def tools_for_llm(self) -> list[dict]:
         """OpenAI-совместимое описание инструментов по онлайн-устройствам."""
+        full = settings.access_mode == "full"
         tools: list[dict] = []
         for device in self.online_devices():
-            for action in catalog.for_device(device.platform, device.actions):
+            for action in catalog.for_device(device.platform, device.actions, full_access=full):
                 entry = catalog.CATALOG[action]
                 properties = {
                     name: {"type": rule.get("type", "str") if rule.get("type") != "list" else "array",

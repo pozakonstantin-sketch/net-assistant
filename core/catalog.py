@@ -45,10 +45,18 @@ CATALOG: dict[str, dict[str, Any]] = {
         },
     },
     "shell.run": {
-        "desc": ("Выполнить разрешённую команду в оболочке. Разрешены только "
-                 "безобидные диагностические программы из белого списка."),
+        "desc": ("Выполнить команду в оболочке. В обычном режиме разрешены только "
+                 "безобидные диагностические программы из белого списка; в полном "
+                 "режиме (ACCESS_MODE=full) — любая команда PowerShell/cmd/sh, "
+                 "включая пайпы и перенаправление."),
         "devices": [PC, ANDROID],
-        "args": {"command": {"type": "str", "required": True, "max_len": 512}},
+        "args": {
+            "command": {"type": "str", "required": True, "max_len": 8000},
+            "shell": {"type": "str", "enum": ["powershell", "cmd", "sh"],
+                      "default": "powershell"},
+            "cwd": {"type": "str", "max_len": 512},
+            "timeout": {"type": "int", "default": 60, "min": 1, "max": 600},
+        },
     },
     "fs.list": {
         "desc": "Показать содержимое каталога.",
@@ -75,6 +83,71 @@ CATALOG: dict[str, dict[str, Any]] = {
         "desc": "Состояние сети устройства: адреса, шлюз, пинг.",
         "devices": [PC, ANDROID, ROUTER],
         "args": {},
+    },
+
+    # ───────────────────── Полный доступ (ACCESS_MODE=full) ─────────────────────
+    "exec.run": {
+        "desc": ("Выполнить произвольную команду оболочки: PowerShell на ПК, "
+                 "sh в Termux, sh на роутере. Поддерживает пайпы и перенаправление. "
+                 "Работает с правами пользователя, под которым запущен агент."),
+        "devices": [PC, ANDROID, ROUTER],
+        "dangerous": True,
+        "full_only": True,
+        "args": {
+            "command": {"type": "str", "required": True, "max_len": 8000},
+            "shell": {"type": "str", "enum": ["powershell", "cmd", "sh"], "default": "powershell"},
+            "cwd": {"type": "str", "max_len": 512},
+            "timeout": {"type": "int", "default": 60, "min": 1, "max": 600},
+        },
+    },
+    "fs.write": {
+        "desc": "Создать или перезаписать файл произвольным содержимым.",
+        "devices": [PC, ANDROID, ROUTER],
+        "dangerous": True,
+        "full_only": True,
+        "args": {
+            "path": {"type": "str", "required": True, "max_len": 512},
+            "text": {"type": "str", "required": True, "max_len": 500000},
+            "append": {"type": "bool", "default": False},
+        },
+    },
+    "fs.delete": {
+        "desc": "Удалить файл или каталог.",
+        "devices": [PC, ANDROID, ROUTER],
+        "dangerous": True,
+        "full_only": True,
+        "args": {
+            "path": {"type": "str", "required": True, "max_len": 512},
+            "recursive": {"type": "bool", "default": False},
+        },
+    },
+    "fs.mkdir": {
+        "desc": "Создать каталог (вместе с родительскими).",
+        "devices": [PC, ANDROID, ROUTER],
+        "full_only": True,
+        "args": {"path": {"type": "str", "required": True, "max_len": 512}},
+    },
+    "proc.kill": {
+        "desc": "Завершить процесс по PID (или по имени на ПК).",
+        "devices": [PC, ANDROID],
+        "dangerous": True,
+        "full_only": True,
+        "args": {
+            "pid": {"type": "int", "min": 1},
+            "name": {"type": "str", "max_len": 128},
+            "force": {"type": "bool", "default": False},
+        },
+    },
+    "power.action": {
+        "desc": "Управление питанием ПК: shutdown, restart, sleep, hibernate, logoff, cancel.",
+        "devices": [PC],
+        "dangerous": True,
+        "full_only": True,
+        "args": {
+            "action": {"type": "str", "required": True,
+                       "enum": ["shutdown", "restart", "sleep", "hibernate", "logoff", "cancel"]},
+            "delay_sec": {"type": "int", "default": 30, "min": 0, "max": 3600},
+        },
     },
 
     # ───────────────────────────── Android ─────────────────────────────
@@ -243,12 +316,20 @@ def is_dangerous(action: str) -> bool:
     return bool(entry and entry.get("dangerous"))
 
 
-def for_device(device_type: str, available: set[str] | None = None) -> list[str]:
+def is_full_access_only(action: str) -> bool:
+    """Действия, доступные только в режиме ACCESS_MODE=full."""
+    entry = CATALOG.get(action)
+    return bool(entry and entry.get("full_only"))
+
+
+def for_device(device_type: str, available: set[str] | None = None,
+               full_access: bool = False) -> list[str]:
     """Действия, доступные типу устройства и реально поддерживаемые агентом."""
     names = [
         name
         for name, entry in CATALOG.items()
         if device_type in entry.get("devices", [])
+        and (full_access or not entry.get("full_only"))
     ]
     if available is not None:
         names = [n for n in names if n in available]

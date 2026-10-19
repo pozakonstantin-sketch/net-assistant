@@ -3,9 +3,11 @@
 Запуск:
     python -m agents.pc_agent
 
-Что умеет: снимок экрана, список процессов, сведения о системе, диагностика
-сети, громкость, блокировка экрана, чтение файлов и строго ограниченный
-запуск диагностических команд из белого списка (PC_SHELL_ALLOW).
+Два режима (ACCESS_MODE в .env):
+    restricted — только белые списки команд и разрешённые каталоги;
+    full       — произвольные команды PowerShell/cmd, запись и удаление файлов,
+                 управление процессами и питанием. Права = права пользователя,
+                 от которого запущен агент.
 """
 
 from __future__ import annotations
@@ -23,11 +25,13 @@ import time
 from pathlib import Path
 
 from agents.common import AgentClient
+from core.config import settings
 
 log = logging.getLogger("pc-agent")
 
 SHELL_TIMEOUT = 25
 MAX_OUTPUT = 64_000
+FULL_ACCESS = settings.access_mode == "full"
 
 DEFAULT_SHELL_ALLOW = (
     "dir,ipconfig,ping,tasklist,whoami,systeminfo,netstat,arp,hostname,where,"
@@ -59,6 +63,8 @@ def guard_path(raw_path: str) -> Path:
     if not target.is_absolute():
         target = Path.home() / target
     target = target.resolve()
+    if FULL_ACCESS:
+        return target
     roots = allowed_roots()
     if not any(target == root or root in target.parents for root in roots):
         raise PermissionError(
@@ -153,12 +159,56 @@ def proc_list(args: dict) -> dict:
             "note": "tasklist не отдаёт загрузку ЦП, сортировка по ЦП доступна через ps"}
 
 
+def _run_full(command: str, shell: str = "powershell", cwd: str | None = None,
+              timeout: int = 60) -> dict:
+    """Выполнить произвольную команду в полном режиме."""
+    timeout = max(1, min(int(timeout), 600))
+    workdir = guard_path(cwd) if cwd else None
+    if workdir and not workdir.is_dir():
+        raise NotADirectoryError(f"не каталог: {workdir}")
+
+    if os.name == "nt":
+        if shell == "cmd":
+            argv = ["cmd.exe", "/c", command]
+        else:  # powershell по умолчанию
+            prelude = ("$ErrorActionPreference='Continue'; "
+                       "[Console]::OutputEncoding=[Text.Encoding]::UTF8; "
+                       "$OutputEncoding=[Text.Encoding]::UTF8; ")
+            argv = ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                    prelude + command]
+    else:
+        argv = ["/bin/sh", "-c", command]
+
+    completed = subprocess.run(
+        argv, cwd=str(workdir) if workdir else None,
+        capture_output=True, text=True, timeout=timeout,
+        encoding="utf-8", errors="replace",
+    )
+    return {
+        "command": command,
+        "shell": shell,
+        "exit_code": completed.returncode,
+        "stdout": completed.stdout[:MAX_OUTPUT],
+        "stderr": completed.stderr[:MAX_OUTPUT // 4],
+        "truncated": len(completed.stdout) > MAX_OUTPUT,
+    }
+
+
 def shell_run(args: dict) -> dict:
     command = str(args["command"]).strip()
     if not command:
         raise ValueError("пустая команда")
-    if len(command) > 512:
+    if len(command) > (8000 if FULL_ACCESS else 512):
         raise ValueError("команда слишком длинная")
+
+    if FULL_ACCESS:
+        return _run_full(
+            command,
+            shell=str(args.get("shell", "powershell")),
+            cwd=args.get("cwd"),
+            timeout=int(args.get("timeout", 60)),
+        )
+
     for char in FORBIDDEN_CHARS:
         if char in command:
             raise PermissionError(f"символ {char!r} запрещён (цепочки и перенаправление отключены)")
@@ -190,6 +240,117 @@ def shell_run(args: dict) -> dict:
         "stderr": completed.stderr[:2000],
         "truncated": len(completed.stdout) > MAX_OUTPUT,
     }
+
+
+def exec_run(args: dict) -> dict:
+    """Произвольная команда оболочки (только полный режим)."""
+    if not FULL_ACCESS:
+        raise PermissionError("exec.run доступен только при ACCESS_MODE=full")
+    command = str(args["command"]).strip()
+    if not command:
+        raise ValueError("пустая команда")
+    return _run_full(
+        command,
+        shell=str(args.get("shell", "powershell")),
+        cwd=args.get("cwd"),
+        timeout=int(args.get("timeout", 60)),
+    )
+
+
+def fs_write(args: dict) -> dict:
+    if not FULL_ACCESS:
+        raise PermissionError("fs.write доступен только при ACCESS_MODE=full")
+    target = guard_path(str(args["path"]))
+    text = str(args["text"])
+    target.parent.mkdir(parents=True, exist_ok=True)
+    mode = "a" if args.get("append") else "w"
+    with target.open(mode, encoding="utf-8", newline="") as handle:
+        handle.write(text)
+    return {"path": str(target), "bytes": len(text.encode("utf-8")),
+            "mode": "append" if args.get("append") else "overwrite"}
+
+
+def fs_delete(args: dict) -> dict:
+    if not FULL_ACCESS:
+        raise PermissionError("fs.delete доступен только при ACCESS_MODE=full")
+    target = guard_path(str(args["path"]))
+    if not target.exists():
+        raise FileNotFoundError(f"нет такого пути: {target}")
+    import shutil
+    if target.is_dir():
+        if not args.get("recursive"):
+            target.rmdir()
+        else:
+            shutil.rmtree(target)
+        kind = "dir"
+    else:
+        target.unlink()
+        kind = "file"
+    return {"deleted": str(target), "type": kind}
+
+
+def fs_mkdir(args: dict) -> dict:
+    if not FULL_ACCESS:
+        raise PermissionError("fs.mkdir доступен только при ACCESS_MODE=full")
+    target = guard_path(str(args["path"]))
+    target.mkdir(parents=True, exist_ok=True)
+    return {"created": str(target)}
+
+
+def proc_kill(args: dict) -> dict:
+    if not FULL_ACCESS:
+        raise PermissionError("proc.kill доступен только при ACCESS_MODE=full")
+    pid = args.get("pid")
+    name = args.get("name")
+    force = bool(args.get("force"))
+    if not pid and not name:
+        raise ValueError("нужен pid или name")
+    if os.name == "nt":
+        if pid:
+            argv = ["taskkill", "/PID", str(int(pid))] + (["/F"] if force else [])
+        else:
+            argv = ["taskkill", "/IM", str(name)] + (["/F"] if force else [])
+    else:
+        argv = ["kill", "-9" if force else "-15",
+                str(int(pid)) if pid else str(name)]
+    completed = subprocess.run(argv, capture_output=True, text=True,
+                               timeout=30, encoding="utf-8", errors="replace")
+    return {"argv": argv, "exit_code": completed.returncode,
+            "stdout": completed.stdout[:2000], "stderr": completed.stderr[:2000]}
+
+
+def power_action(args: dict) -> dict:
+    if not FULL_ACCESS:
+        raise PermissionError("power.action доступен только при ACCESS_MODE=full")
+    action = str(args["action"])
+    delay = int(args.get("delay_sec", 30))
+    if os.name == "nt":
+        if action == "cancel":
+            argv = ["shutdown", "/a"]
+        elif action in {"shutdown", "restart"}:
+            flag = "/s" if action == "shutdown" else "/r"
+            argv = ["shutdown", flag, "/t", str(delay)]
+        elif action == "logoff":
+            argv = ["shutdown", "/l"]
+        elif action == "hibernate":
+            argv = ["shutdown", "/h"]
+        elif action == "sleep":
+            argv = ["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"]
+        else:
+            raise ValueError(f"неизвестное действие: {action}")
+    else:
+        if action == "shutdown":
+            argv = ["shutdown", "-h", "now"]
+        elif action == "restart":
+            argv = ["shutdown", "-r", "now"]
+        elif action == "cancel":
+            argv = ["shutdown", "-c"]
+        else:
+            raise ValueError(f"действие {action} не поддержано на этой ОС")
+    completed = subprocess.run(argv, capture_output=True, text=True,
+                               timeout=30, encoding="utf-8", errors="replace")
+    return {"action": action, "delay_sec": delay, "exit_code": completed.returncode,
+            "stdout": completed.stdout[:1000], "stderr": completed.stderr[:1000]}
 
 
 def fs_list(args: dict) -> dict:
@@ -310,9 +471,15 @@ HANDLERS = {
     "sys.screenshot": sys_screenshot,
     "sys.lock": sys_lock,
     "proc.list": proc_list,
+    "proc.kill": proc_kill,
     "shell.run": shell_run,
+    "exec.run": exec_run,
     "fs.list": fs_list,
     "fs.read": fs_read,
+    "fs.write": fs_write,
+    "fs.delete": fs_delete,
+    "fs.mkdir": fs_mkdir,
+    "power.action": power_action,
     "media.volume": media_volume,
     "net.status": net_status,
 }

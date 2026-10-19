@@ -20,6 +20,7 @@ param(
     [string]$Python = "",
     [switch]$RunNow,
     [switch]$Remove,
+    [switch]$Elevated,
     [string]$User = "",
     [string]$Password = ""
 )
@@ -72,17 +73,22 @@ $settings = New-ScheduledTaskSettingsSet `
     -RestartInterval (New-TimeSpan -Minutes 1) `
     -ExecutionTimeLimit ([TimeSpan]::Zero)
 
+$runLevel = if ($Elevated) { "Highest" } else { "Limited" }
+if ($Elevated) {
+    Write-Host "Режим: повышенные права (RunLevel Highest)." -ForegroundColor Yellow
+}
+
 if ($User) {
     if (-not $Password) {
         throw "Для запуска от другого пользователя нужен -Password (или создайте задачу вручную в Планировщике)."
     }
     Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
-        -Settings $settings -User $User -Password $Password -RunLevel Limited `
+        -Settings $settings -User $User -Password $Password -RunLevel $runLevel `
         -Description "Net Assistant: агент ПК (управление с телефона/роутера)" -Force | Out-Null
     Write-Host "Задача зарегистрирована от имени $User." -ForegroundColor Green
 } else {
     $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" `
-        -LogonType Interactive -RunLevel Limited
+        -LogonType Interactive -RunLevel $runLevel
     Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
         -Settings $settings -Principal $principal `
         -Description "Net Assistant: агент ПК (управление с телефона/роутера)" -Force | Out-Null

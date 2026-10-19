@@ -146,6 +146,7 @@ pgrep -f agents.android_agent
 | `sms.list`, `sms.send` ⚠ | чтение и отправка SMS |
 | `torch.set` | фонарик |
 | `fs.list`, `fs.read`, `shell.run` ⚠ | файлы и ограниченная оболочка |
+| `exec.run`, `fs.write`, `fs.delete`, `proc.kill` ⚠ | полный доступ: включается `ACCESS_MODE=full` |
 
 ⚠ — действия, требующие подтверждения токеном (`REQUIRE_CONFIRM=true`).
 
@@ -196,6 +197,8 @@ sudo tailscale cert assistant-hub.<tailnet>.ts.net
   `history -c`.
 - Ядро слушает `0.0.0.0:8787`, но добраться до него можно только из локалки и
   из tailnet. Наружу порт не публикуется.
+- Режим доступа задаётся `ACCESS_MODE` в `.env` телефона: `restricted` (белые
+  списки) или `full` (произвольные команды Termux, запись/удаление файлов).
 - Опасные действия (SMS, `app.stop`, `shell.run`, перезагрузка роутера…)
   выполняются только после подтверждения токеном. Отключение — `REQUIRE_CONFIRM=false`,
   но так делать не советуем.

@@ -21,11 +21,13 @@ import subprocess
 from pathlib import Path
 
 from agents.common import AgentClient
+from core.config import settings
 
 log = logging.getLogger("android-agent")
 
 TIMEOUT = 20
 MAX_OUTPUT = 32_000
+FULL_ACCESS = settings.access_mode == "full"
 
 ALLOWED_SHELL = {
     "ls", "cat", "pwd", "df", "du", "free", "uname", "uptime", "date", "whoami",
@@ -337,6 +339,11 @@ def screen_key(args: dict) -> dict:
 
 def shell_run(args: dict) -> dict:
     command = str(args["command"]).strip()
+    if not command:
+        raise ValueError("пустая команда")
+    if FULL_ACCESS:
+        return _run_full(command, cwd=args.get("cwd"),
+                         timeout=int(args.get("timeout", 60)))
     parts = shlex.split(command)
     if not parts:
         raise ValueError("пустая команда")
@@ -347,6 +354,81 @@ def shell_run(args: dict) -> dict:
                                errors="ignore")
     return {"command": command, "exit_code": completed.returncode,
             "stdout": completed.stdout[:MAX_OUTPUT], "stderr": completed.stderr[:2000]}
+
+
+def _run_full(command: str, cwd: str | None = None, timeout: int = 60) -> dict:
+    """Произвольная команда в Termux (полный режим)."""
+    timeout = max(1, min(int(timeout), 600))
+    workdir = str(guard_path(cwd)) if cwd else None
+    completed = subprocess.run(
+        ["/bin/sh", "-c", command], cwd=workdir, capture_output=True, text=True,
+        timeout=timeout, encoding="utf-8", errors="replace",
+    )
+    return {"command": command, "exit_code": completed.returncode,
+            "stdout": completed.stdout[:MAX_OUTPUT],
+            "stderr": completed.stderr[:MAX_OUTPUT // 4],
+            "truncated": len(completed.stdout) > MAX_OUTPUT}
+
+
+def exec_run(args: dict) -> dict:
+    if not FULL_ACCESS:
+        raise PermissionError("exec.run доступен только при ACCESS_MODE=full")
+    command = str(args["command"]).strip()
+    if not command:
+        raise ValueError("пустая команда")
+    return _run_full(command, cwd=args.get("cwd"),
+                     timeout=int(args.get("timeout", 60)))
+
+
+def fs_write(args: dict) -> dict:
+    if not FULL_ACCESS:
+        raise PermissionError("fs.write доступен только при ACCESS_MODE=full")
+    target = guard_path(str(args["path"]))
+    text = str(args["text"])
+    target.parent.mkdir(parents=True, exist_ok=True)
+    mode = "a" if args.get("append") else "w"
+    with target.open(mode, encoding="utf-8", newline="") as handle:
+        handle.write(text)
+    return {"path": str(target), "bytes": len(text.encode("utf-8")),
+            "mode": "append" if args.get("append") else "overwrite"}
+
+
+def fs_delete(args: dict) -> dict:
+    if not FULL_ACCESS:
+        raise PermissionError("fs.delete доступен только при ACCESS_MODE=full")
+    target = guard_path(str(args["path"]))
+    if not target.exists():
+        raise FileNotFoundError(f"нет такого пути: {target}")
+    import shutil
+    if target.is_dir():
+        if args.get("recursive"):
+            shutil.rmtree(target)
+        else:
+            target.rmdir()
+        kind = "dir"
+    else:
+        target.unlink()
+        kind = "file"
+    return {"deleted": str(target), "type": kind}
+
+
+def fs_mkdir(args: dict) -> dict:
+    if not FULL_ACCESS:
+        raise PermissionError("fs.mkdir доступен только при ACCESS_MODE=full")
+    target = guard_path(str(args["path"]))
+    target.mkdir(parents=True, exist_ok=True)
+    return {"created": str(target)}
+
+
+def proc_kill(args: dict) -> dict:
+    if not FULL_ACCESS:
+        raise PermissionError("proc.kill доступен только при ACCESS_MODE=full")
+    pid = args.get("pid")
+    if not pid:
+        raise ValueError("нужен pid")
+    completed = _run("kill", "-9" if args.get("force") else "-15", str(int(pid)))
+    return {"pid": int(pid), "exit_code": completed.returncode,
+            "stderr": completed.stderr[:1000]}
 
 
 def fs_list(args: dict) -> dict:
@@ -377,8 +459,13 @@ def net_status(_args: dict) -> dict:
 HANDLERS = {
     "sys.info": sys_info,
     "shell.run": shell_run,
+    "exec.run": exec_run,
     "fs.list": fs_list,
     "fs.read": fs_read,
+    "fs.write": fs_write,
+    "fs.delete": fs_delete,
+    "fs.mkdir": fs_mkdir,
+    "proc.kill": proc_kill,
     "net.status": net_status,
     "battery.status": battery_status,
     "sms.list": sms_list,

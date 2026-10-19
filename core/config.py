@@ -54,6 +54,12 @@ class Settings:
     require_confirm: bool = _bool("REQUIRE_CONFIRM", True)
     allowed_devices: tuple[str, ...] = tuple(_csv("ALLOWED_DEVICES"))
 
+    # Режим доступа агентов:
+    #   restricted — только белые списки команд и разрешённые каталоги (по умолчанию);
+    #   full       — произвольные команды оболочки, запись/удаление файлов, процессы.
+    # В full агент получает права того пользователя, от которого запущен.
+    access_mode: str = os.getenv("ACCESS_MODE", "restricted").strip().lower()
+
     # Распознавание речи. engine: auto | openai | local
     stt_engine: str = os.getenv("STT_ENGINE", "auto").strip().lower()
     stt_base_url: str = os.getenv("STT_BASE_URL", "https://api.openai.com/v1").rstrip("/")

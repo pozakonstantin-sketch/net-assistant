@@ -11,7 +11,6 @@ Root не нужен: всё, что умеет Termux:API, доступно о�
 
 from __future__ import annotations
 
-import base64
 import json
 import logging
 import os
@@ -64,8 +63,8 @@ def termux(*args: str, timeout: int = TIMEOUT) -> str:
     return completed.stdout.strip()
 
 
-def termux_json(*args: str) -> object:
-    output = termux(*args)
+def termux_json(*args: str, timeout: int = TIMEOUT) -> object:
+    output = termux(*args, timeout=timeout)
     try:
         return json.loads(output)
     except json.JSONDecodeError:
@@ -76,13 +75,16 @@ def termux_json(*args: str) -> object:
 
 
 def sys_info(_args: dict) -> dict:
+    """Сведения о телефоне. getprop — системный бинарник, а не termux-утилита."""
     properties = {}
-    for key in ("ro.product.model", "ro.product.manufacturer", "ro.build.version.release",
-                "ro.build.version.sdk", "ro.product.cpu.abi"):
+    for key in ("ro.product.model", "ro.product.manufacturer", "ro.product.brand",
+                "ro.build.version.release", "ro.build.version.sdk", "ro.product.cpu.abi"):
         try:
-            properties[key.split(".")[-1]] = termux("getprop", key)
+            value = _run("getprop", key, env=_system_env()).stdout.strip()
         except Exception:  # noqa: BLE001
             continue
+        if value:
+            properties[key.split(".")[-1]] = value
     return {"device": properties, "termux_prefix": os.environ.get("PREFIX", ""),
             "home": os.path.expanduser("~")}
 
@@ -129,7 +131,21 @@ def wifi_info(_args: dict) -> dict:
 
 
 def location_get(_args: dict) -> dict:
-    return termux_json("location", "-p", "network")
+    """Последняя известная точка.
+
+    Режим ``-r last`` отвечает мгновенно и не занимает очередь Termux:API.
+    Запрос свежего фикса (``-r once``/без ``-r``) на этой модели может висеть
+    минуты и заодно ломать остальные команды — он сознательно не используется.
+    """
+    data = termux_json("location", "-p", "network", "-r", "last", timeout=15)
+    if isinstance(data, dict) and data.get("API_ERROR"):
+        return {"available": False,
+                "note": ("телефон не отдал координаты: " + str(data["API_ERROR"]) +
+                         ". Проверьте, что геолокация включена, а Termux:API разрешено "
+                         "определять местоположение.")}
+    if not data:
+        return {"available": False, "note": "координаты недоступны"}
+    return {"available": True, "location": data}
 
 
 def app_open(args: dict) -> dict:
@@ -246,95 +262,37 @@ def app_current(_args: dict) -> dict:
             "note": "не удалось определить активность (Android 12+ может скрывать её)"}
 
 
+# Снимок экрана, разбор интерфейса и ввод касаний требуют системных разрешений
+# READ_FRAME_BUFFER и INJECT_EVENTS, которые обычному приложению не выдают.
+# Поэтому эти действия на телефоне недоступны без root или отладки по USB (adb),
+# и агент их даже не объявляет — иначе LLM обещал бы пользователю невозможное.
+_NO_SCREEN = ("Управление экраном и снимки экрана на этой модели недоступны: "
+              "Android запрещает обычным приложениям ввод касаний и захват экрана "
+              "без root или отладки по USB (adb).")
+
+
 def screen_shot(_args: dict) -> dict:
-    tmp = Path(os.environ.get("TMPDIR", "/data/data/com.termux/files/usr/tmp")) / "screen.png"
-    completed = _run("/system/bin/screencap", "-p", str(tmp), env=_system_env())
-    if completed.returncode != 0 or not tmp.exists():
-        detail = (completed.stderr or completed.stdout).strip()
-        # Android 16 ругается на несколько дисплеев, но снимок всё равно делает —
-        # поэтому проверяем только наличие файла.
-        if not tmp.exists():
-            raise RuntimeError(detail[:300] or "screencap не сработал")
-    raw = tmp.read_bytes()
-    tmp.unlink(missing_ok=True)
-    return {"image_b64": base64.b64encode(raw).decode("ascii"),
-            "bytes": len(raw), "format": "png"}
+    raise RuntimeError(_NO_SCREEN)
 
 
-def ui_dump(args: dict) -> dict:
-    tmp = Path(os.environ.get("TMPDIR", "/data/data/com.termux/files/usr/tmp")) / "window.xml"
-    completed = _run("/system/bin/uiautomator", "dump", "--compressed", str(tmp),
-                     timeout=30, env=_system_env())
-    if completed.returncode != 0 or not tmp.exists():
-        detail = (completed.stderr or completed.stdout).strip()[:300]
-        raise RuntimeError(
-            "uiautomator не смог снять дерево интерфейса. " + (detail or
-            "На Android 12+ это часто требует отладки по USB/adb.")
-        )
-    xml = tmp.read_text(errors="ignore")
-    tmp.unlink(missing_ok=True)
-
-    if not args.get("compact", True):
-        return {"xml": xml[:20000]}
-
-    elements = []
-    for node in re.findall(r"<node[^>]*>", xml):
-        text = re.search(r'text="([^"]*)"', node)
-        desc = re.search(r'content-desc="([^"]*)"', node)
-        bounds = re.search(r'bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', node)
-        label = (text.group(1) if text else "") or (desc.group(1) if desc else "")
-        if not label or not bounds:
-            continue
-        x1, y1, x2, y2 = (int(value) for value in bounds.groups())
-        elements.append({"text": label[:80], "center": [(x1 + x2) // 2, (y1 + y2) // 2]})
-    return {"count": len(elements), "elements": elements[:60]}
+def ui_dump(_args: dict) -> dict:
+    raise RuntimeError(_NO_SCREEN)
 
 
-def screen_tap(args: dict) -> dict:
-    x, y = int(args["x"]), int(args["y"])
-    completed = _run("input", "tap", str(x), str(y))
-    return {"tapped": [x, y], "exit_code": completed.returncode}
+def screen_tap(_args: dict) -> dict:
+    raise RuntimeError(_NO_SCREEN)
 
 
-def screen_swipe(args: dict) -> dict:
-    duration = int(args.get("duration_ms", 300))
-    values = [str(int(args[key])) for key in ("x1", "y1", "x2", "y2")]
-    completed = _run("input", "swipe", *values, str(duration))
-    return {"swipe": values, "duration_ms": duration, "exit_code": completed.returncode}
+def screen_swipe(_args: dict) -> dict:
+    raise RuntimeError(_NO_SCREEN)
 
 
-def screen_text(args: dict) -> dict:
-    text = str(args["text"])
-    if not text.isascii():
-        raise ValueError("input text поддерживает только латиницу; для кириллицы нужен adb или буфер обмена")
-    completed = _run("input", "text", text.replace(" ", "%s"))
-    return {"typed_chars": len(text), "exit_code": completed.returncode}
+def screen_text(_args: dict) -> dict:
+    raise RuntimeError(_NO_SCREEN)
 
 
-KEYCODES = {
-    "home": "KEYCODE_HOME",
-    "back": "KEYCODE_BACK",
-    "recents": "KEYCODE_APP_SWITCH",
-    "enter": "KEYCODE_ENTER",
-    "delete": "KEYCODE_DEL",
-    "power": "KEYCODE_POWER",
-    "volume_up": "KEYCODE_VOLUME_UP",
-    "volume_down": "KEYCODE_VOLUME_DOWN",
-    "wakeup": "KEYCODE_WAKEUP",
-    "sleep": "KEYCODE_SLEEP",
-    "menu": "KEYCODE_MENU",
-    "search": "KEYCODE_SEARCH",
-    "play_pause": "KEYCODE_MEDIA_PLAY_PAUSE",
-}
-
-
-def screen_key(args: dict) -> dict:
-    key = str(args["key"]).strip().lower()
-    code = KEYCODES.get(key)
-    if code is None:
-        raise ValueError(f"неизвестная кнопка: {key}")
-    completed = _run("input", "keyevent", code)
-    return {"key": key, "keycode": code, "exit_code": completed.returncode}
+def screen_key(_args: dict) -> dict:
+    raise RuntimeError(_NO_SCREEN)
 
 
 def shell_run(args: dict) -> dict:
@@ -449,11 +407,32 @@ def fs_read(args: dict) -> dict:
 
 
 def net_status(_args: dict) -> dict:
-    addresses = subprocess.run(["ip", "-j", "addr"], capture_output=True, text=True,
-                               timeout=TIMEOUT, errors="ignore").stdout
-    ping = subprocess.run(["ping", "-c", "1", "-W", "3", "1.1.1.1"],
-                          capture_output=True, text=True, timeout=TIMEOUT, errors="ignore")
-    return {"interfaces": addresses[:4000], "internet": ping.returncode == 0}
+    """Сеть телефона: адреса интерфейсов, наличие интернета, сведения о WiFi."""
+    addresses = ""
+    for argv in (("ip", "-j", "addr"), ("ip", "addr"), ("ifconfig",)):
+        try:
+            completed = subprocess.run(list(argv), capture_output=True, text=True,
+                                       timeout=TIMEOUT, errors="ignore")
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            continue
+        if completed.stdout.strip():
+            addresses = completed.stdout.strip()
+            break
+
+    wifi: object = {}
+    try:
+        wifi = termux_json("wifi-connectioninfo")
+    except Exception:  # noqa: BLE001
+        wifi = {}
+
+    try:
+        ping = subprocess.run(["ping", "-c", "1", "-W", "3", "1.1.1.1"],
+                              capture_output=True, text=True, timeout=TIMEOUT, errors="ignore")
+        internet = ping.returncode == 0
+    except Exception:  # noqa: BLE001
+        internet = False
+
+    return {"interfaces": addresses[:4000], "internet": internet, "wifi": wifi}
 
 
 HANDLERS = {
@@ -480,12 +459,6 @@ HANDLERS = {
     "app.info": app_info,
     "app.stop": app_stop,
     "app.current": app_current,
-    "screen.shot": screen_shot,
-    "ui.dump": ui_dump,
-    "screen.tap": screen_tap,
-    "screen.swipe": screen_swipe,
-    "screen.text": screen_text,
-    "screen.key": screen_key,
 }
 
 

@@ -194,7 +194,8 @@ CATALOG: dict[str, dict[str, Any]] = {
         "args": {},
     },
     "location.get": {
-        "desc": "Текущее местоположение телефона.",
+        "desc": ("Текущее местоположение телефона (по сети или GPS). В помещении может быть"
+                 " недоступно — тогда команда честно сообщит, что точки нет."),
         "devices": [ANDROID],
         "args": {},
     },
@@ -227,54 +228,6 @@ CATALOG: dict[str, dict[str, Any]] = {
         "desc": "Какое приложение сейчас на переднем плане (пакет и активность).",
         "devices": [ANDROID],
         "args": {},
-    },
-    "screen.shot": {
-        "desc": "Снимок экрана телефона. Возвращает ссылку на PNG.",
-        "devices": [ANDROID],
-        "args": {},
-    },
-    "ui.dump": {
-        "desc": ("Дерево интерфейса: тексты, подписи и координаты центров элементов. "
-                 "Помогает понять, что сейчас на экране, и куда нажать."),
-        "devices": [ANDROID],
-        "args": {"compact": {"type": "bool", "default": True}},
-    },
-    "screen.tap": {
-        "desc": "Коснуться экрана телефона в точке (x, y).",
-        "devices": [ANDROID],
-        "args": {
-            "x": {"type": "int", "required": True, "min": 0, "max": 10000},
-            "y": {"type": "int", "required": True, "min": 0, "max": 10000},
-        },
-    },
-    "screen.swipe": {
-        "desc": "Свайп по экрану телефона из точки в точку за указанное время.",
-        "devices": [ANDROID],
-        "args": {
-            "x1": {"type": "int", "required": True, "min": 0, "max": 10000},
-            "y1": {"type": "int", "required": True, "min": 0, "max": 10000},
-            "x2": {"type": "int", "required": True, "min": 0, "max": 10000},
-            "y2": {"type": "int", "required": True, "min": 0, "max": 10000},
-            "duration_ms": {"type": "int", "default": 300, "min": 50, "max": 5000},
-        },
-    },
-    "screen.text": {
-        "desc": "Ввести текст в активное поле. Только латиница и цифры (ограничение Android).",
-        "devices": [ANDROID],
-        "args": {"text": {"type": "str", "required": True, "max_len": 200}},
-    },
-    "screen.key": {
-        "desc": "Нажать системную кнопку телефона.",
-        "devices": [ANDROID],
-        "args": {
-            "key": {
-                "type": "str",
-                "required": True,
-                "enum": ["home", "back", "recents", "enter", "delete", "power",
-                         "volume_up", "volume_down", "wakeup", "sleep", "menu",
-                         "search", "play_pause"],
-            }
-        },
     },
 
     # ───────────────────────────── Роутер ─────────────────────────────

@@ -43,6 +43,7 @@ HELP = """<b>Ассистент</b> — управление ПК, телефо�
 Команды:
 /status — ядро и список устройств
 /pending — что ждёт подтверждения
+/panel — открыть панель (устройства, чат, журнал)
 /reset — очистить контекст диалога
 /help — эта справка
 
@@ -73,6 +74,14 @@ def _split(text: str) -> list[str]:
         rest = rest[cut:].lstrip("\n")
     chunks.append(rest)
     return chunks
+
+
+def panel_row() -> list[list[dict]]:
+    """Кнопка «открыть панель» — если настроен HTTPS-адрес мини-приложения."""
+    url = settings.telegram_webapp_url
+    if not url:
+        return []
+    return [[{"text": "🌐 Открыть панель", "web_app": {"url": url}}]]
 
 
 # ─────────────────────────────── клиент ───────────────────────────────
@@ -160,7 +169,7 @@ class Telegram:
     async def on_command(self, chat_id: int, text: str) -> None:
         command = text.split()[0].lower().lstrip("/")
         if command in {"start", "help"}:
-            await self.send(chat_id, HELP)
+            await self.send(chat_id, HELP, keyboard=panel_row() or None)
         elif command == "status":
             await self.status(chat_id)
         elif command == "pending":
@@ -168,6 +177,13 @@ class Telegram:
         elif command == "reset":
             await self.core_call("DELETE", f"/session/{SESSION_PREFIX}{chat_id}")
             await self.send(chat_id, "🧹 Контекст диалога очищен.")
+        elif command == "panel":
+            if settings.telegram_webapp_url:
+                await self.send(chat_id, "Откройте панель кнопкой ниже.",
+                                keyboard=panel_row())
+            else:
+                await self.send(chat_id, "Мини-приложение не настроено "
+                                         "(TELEGRAM_WEBAPP_URL в .env).")
         else:
             await self.send(chat_id, "Неизвестная команда. /help")
 
@@ -284,6 +300,22 @@ class Telegram:
         await self.send(chat_id, f"🎤 <i>{_esc(data.get('text'))}</i>")
         await self.reply(chat_id, data)
 
+    # ─────────────────────── мини-приложение ───────────────────────
+
+    async def set_menu_button(self) -> None:
+        """Кнопка «Панель» у поля ввода — открывает мини-приложение."""
+        url = settings.telegram_webapp_url
+        if not url:
+            return
+        try:
+            await self.api("setChatMenuButton", {
+                "menu_button": {"type": "web_app", "text": "Панель",
+                                "web_app": {"url": url}},
+            })
+            log.info("меню-кнопка мини-приложения: %s", url)
+        except RuntimeError as exc:
+            log.warning("не удалось поставить меню-кнопку: %s", exc)
+
     # ─────────────────────────── цикл опроса ───────────────────────────
 
     async def handle(self, update: dict) -> None:
@@ -315,6 +347,7 @@ class Telegram:
             await self.send(chat_id, f"⛔️ Доступ запрещён.\nВаш chat_id: <code>{chat_id}</code>")
             return
         if not allowed:
+            log.info("неизвестный чат %s: добавьте в TELEGRAM_ALLOWED_CHAT_IDS", chat_id)
             await self.send(chat_id, f"ℹ️ Ваш chat_id: <code>{chat_id}</code>\n"
                                      f"Добавьте его в <code>TELEGRAM_ALLOWED_CHAT_IDS</code> "
                                      f"в .env и перезапустите бота, чтобы закрыть доступ.")
@@ -333,6 +366,8 @@ class Telegram:
         if not _allowed():
             log.warning("TELEGRAM_ALLOWED_CHAT_IDS пуст — бот отвечает всем; "
                         "добавьте свой chat_id в .env")
+        if settings.telegram_webapp_url:
+            await self.set_menu_button()
         log.info("бот @%s запущен, ядро: %s", name, self.core)
 
         offset = 0
@@ -354,6 +389,9 @@ async def main() -> None:
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
                         datefmt="%Y-%m-%d %H:%M:%S")
+    # httpx пишет URL целиком — в них токен бота, поэтому глушим
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
     bot = Telegram()
     try:
         await bot.run()

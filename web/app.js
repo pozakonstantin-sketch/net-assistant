@@ -37,6 +37,7 @@ function showLogin(message = '') {
 }
 
 async function boot() {
+  if (!state.token) await telegramLogin();
   if (!state.token) return showLogin();
   try {
     await refreshAll();
@@ -48,6 +49,28 @@ async function boot() {
   } catch (error) {
     if (error.message !== 'unauthorized') showLogin(error.message);
   }
+}
+
+/* ─────────────── вход через Telegram Mini App ─────────────── */
+
+const tg = window.Telegram && window.Telegram.WebApp;
+
+async function telegramLogin() {
+  if (!tg || !tg.initData) return;          // обычный браузер — форма токена
+  try { tg.ready(); tg.expand(); } catch {}
+  try {
+    const response = await fetch('/tg/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ init_data: tg.initData }),
+    });
+    if (!response.ok) return;
+    const data = await response.json();
+    if (data.token) {
+      state.token = data.token;
+      localStorage.setItem('na_token', data.token);
+    }
+  } catch { /* не вышло — покажем форму */ }
 }
 
 function setStatus(text, ok) {

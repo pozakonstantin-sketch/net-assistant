@@ -25,6 +25,7 @@ from .audit import audit
 from .config import BASE_DIR, settings
 from .files import SHOTS_DIR
 from .hub import CommandFailed, Device, DeviceOffline, hub
+from .telegram_auth import AuthError, validate_init_data
 
 logging.basicConfig(
     level=logging.INFO,
@@ -89,6 +90,10 @@ class ChatRequest(BaseModel):
     session: str = Field(default="default", max_length=64)
 
 
+class TelegramAuthRequest(BaseModel):
+    init_data: str = Field(min_length=1, max_length=8192)
+
+
 _sessions: dict[str, list[dict]] = {}
 
 
@@ -99,6 +104,28 @@ def _trim(history: list[dict]) -> list[dict]:
     while cut < len(history) and history[cut].get("role") != "user":
         cut += 1
     return history[cut:]
+
+
+# ─────────────────── вход из мини-приложения Telegram ───────────────────
+
+
+@app.post("/tg/auth")
+async def telegram_auth(request: TelegramAuthRequest) -> dict:
+    """Обменять подписанные данные мини-приложения на токен ассистента.
+
+    Проверяется подпись Telegram (HMAC на токене бота) и то, что пользователь
+    в списке TELEGRAM_ALLOWED_CHAT_IDS. Так дашборд внутри Telegram
+    открывается без ручного ввода токена.
+    """
+    if not settings.telegram_token:
+        raise HTTPException(503, "Telegram не настроен (TELEGRAM_BOT_TOKEN в .env)")
+    try:
+        info = validate_init_data(request.init_data)
+    except AuthError as exc:
+        raise HTTPException(401, str(exc)) from exc
+    user = info["user"]
+    return {"token": settings.token, "user": user,
+            "name": user.get("first_name") or user.get("username") or "пользователь"}
 
 
 # ─────────────────────────── служебные ───────────────────────────

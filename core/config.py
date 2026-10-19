@@ -77,6 +77,8 @@ class Settings:
     telegram_core_url: str = os.getenv(
         "TELEGRAM_CORE_URL", f"http://127.0.0.1:{os.getenv('CORE_PORT', '8787')}"
     ).rstrip("/")
+    # HTTPS-адрес панели для мини-приложения (например, https://host.tailnet.ts.net)
+    telegram_webapp_url: str = os.getenv("TELEGRAM_WEBAPP_URL", "").strip().rstrip("/")
 
 
 settings = Settings()

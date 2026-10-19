@@ -20,7 +20,9 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Res
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import catalog, llm, models, voice
+from . import catalog
+from . import history as chat_history
+from . import llm, models, voice
 from .audit import audit
 from .config import BASE_DIR, settings
 from .files import SHOTS_DIR
@@ -35,12 +37,12 @@ logging.basicConfig(
 log = logging.getLogger("core")
 
 CONFIRM_RE = re.compile(r"^\s*(?:подтверждаю|подтвердить|confirm)\s+([A-Za-z0-9_\-]+)\s*$", re.I)
-HISTORY_LIMIT = 24
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     SHOTS_DIR.mkdir(parents=True, exist_ok=True)
+    chat_history.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
     log.info("ядро запущено: http://%s:%s (устройств в памяти: %d)",
              settings.host, settings.port, len(hub.devices))
     if settings.token in {"", "change-me"}:
@@ -98,16 +100,25 @@ class ModelRequest(BaseModel):
     model: str = Field(min_length=1, max_length=128)
 
 
-_sessions: dict[str, list[dict]] = {}
+async def _run_chat(session: str, text: str) -> dict:
+    """Один ход диалога с сохранением истории на диск.
 
-
-def _trim(history: list[dict]) -> list[dict]:
-    if len(history) <= HISTORY_LIMIT:
-        return history
-    cut = len(history) - HISTORY_LIMIT
-    while cut < len(history) and history[cut].get("role") != "user":
-        cut += 1
-    return history[cut:]
+    Историю для модели собираем ДО записи новой реплики: ``llm.run_turn``
+    сам добавляет в переданный список сообщение пользователя и ответ.
+    """
+    history = chat_history.llm_messages(session)
+    chat_history.append(session, "user", text)
+    try:
+        outcome = await llm.run_turn(text, history)
+    except Exception as exc:  # noqa: BLE001 - ошибку покажем в истории и вызывающему
+        chat_history.append(session, "system", f"ошибка: {exc}")
+        raise
+    chat_history.append(
+        session, "assistant", str(outcome.get("reply") or ""),
+        executed=outcome.get("executed") or None,
+        pending=outcome.get("pending") or None,
+    )
+    return outcome
 
 
 # ─────────────────── вход из мини-приложения Telegram ───────────────────
@@ -371,13 +382,18 @@ async def run_command(request: CommandRequest) -> dict:
 
 
 @app.post("/confirm/{token}", dependencies=[Depends(require_token)])
-async def confirm(token: str) -> dict:
+async def confirm(token: str, session: str | None = None) -> dict:
     try:
-        return {"status": "ok", **await llm.confirm(token)}
+        outcome = await llm.confirm(token)
     except ValueError as exc:
         raise HTTPException(404, str(exc)) from exc
     except (DeviceOffline, CommandFailed) as exc:
         raise HTTPException(400, str(exc)) from exc
+    if session:
+        reply = f"Готово: {outcome.get('action')} → {outcome.get('result')}"
+        chat_history.append(session, "user", f"подтверждаю {token}")
+        chat_history.append(session, "assistant", reply, executed=[outcome])
+    return {"status": "ok", **outcome}
 
 
 # ─────────────────────────── диалог с LLM ───────────────────────────
@@ -386,6 +402,8 @@ async def confirm(token: str) -> dict:
 @app.post("/chat", dependencies=[Depends(require_token)])
 async def chat(request: ChatRequest) -> dict:
     text = request.message.strip()
+    if not text:
+        raise HTTPException(400, "пустое сообщение")
 
     match = CONFIRM_RE.match(text)
     if match:
@@ -395,30 +413,46 @@ async def chat(request: ChatRequest) -> dict:
             raise HTTPException(404, str(exc)) from exc
         except (DeviceOffline, CommandFailed) as exc:
             raise HTTPException(400, str(exc)) from exc
-        return {"reply": f"Готово: {outcome.get('action')} → {outcome.get('result')}",
-                "executed": [outcome], "pending": []}
+        reply = f"Готово: {outcome.get('action')} → {outcome.get('result')}"
+        chat_history.append(request.session, "user", text)
+        chat_history.append(request.session, "assistant", reply, executed=[outcome])
+        return {"reply": reply, "executed": [outcome], "pending": []}
 
     if text.lower() in {"отмена", "нет", "cancel"}:
         cleared = len(llm.confirmations.list())
         llm.confirmations._items.clear()
-        return {"reply": f"Отменено. Снято ожидающих подтверждений: {cleared}",
-                "executed": [], "pending": []}
+        reply = f"Отменено. Снято ожидающих подтверждений: {cleared}"
+        chat_history.append(request.session, "user", text)
+        chat_history.append(request.session, "assistant", reply)
+        return {"reply": reply, "executed": [], "pending": []}
 
-    history = _sessions.setdefault(request.session, [])
     try:
-        outcome = await llm.run_turn(text, history)
+        return await _run_chat(request.session, text)
     except llm.LLMNotConfigured as exc:
         raise HTTPException(500, str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(502, str(exc)) from exc
-    _sessions[request.session] = _trim(history)
-    return outcome
+
+
+@app.get("/history", dependencies=[Depends(require_token)])
+async def history_list(session: str = "default", limit: int = 200) -> dict:
+    """Сохранённая переписка с ИИ (для панели и Telegram-бота)."""
+    return {
+        "session": session,
+        "messages": chat_history.entries(session, max(1, min(limit, 500))),
+    }
+
+
+@app.get("/sessions", dependencies=[Depends(require_token)])
+async def sessions_list() -> dict:
+    return {"sessions": chat_history.sessions()}
 
 
 @app.delete("/session/{session}", dependencies=[Depends(require_token)])
 async def reset_session(session: str) -> dict:
-    _sessions.pop(session, None)
-    return {"status": "ok", "session": session, "note": "контекст диалога очищен"}
+    removed = chat_history.clear(session)
+    return {"status": "ok", "session": session, "removed": removed,
+            "note": "контекст и история диалога очищены"}
 
 
 # ─────────────────────────── голос ───────────────────────────
@@ -445,14 +479,12 @@ async def voice_input(
 
     result: dict = {"text": heard["text"], "engine": heard["engine"]}
     if chat and heard["text"]:
-        history = _sessions.setdefault(session, [])
         try:
-            turn = await llm.run_turn(heard["text"], history)
+            turn = await _run_chat(session, heard["text"])
         except llm.LLMNotConfigured as exc:
             raise HTTPException(500, str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(502, str(exc)) from exc
-        _sessions[session] = _trim(history)
         result.update(turn)
     return result
 

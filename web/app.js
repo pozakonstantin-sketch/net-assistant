@@ -1,14 +1,96 @@
-/* Net Assistant — дашборд без сборки: ванильный JS + fetch. */
+/* Net Assistant — панель-мини-приложение.
+   Ванильный JS, без сборки. Экран фиксированный, прокручиваются только
+   внутренние области. Переписка хранится в ядре (data/history). */
 
-const $ = (sel) => document.querySelector(sel);
+'use strict';
+
+const $ = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+
+const tg = window.Telegram && window.Telegram.WebApp;
+
 const state = {
   token: localStorage.getItem('na_token') || '',
+  session: '',
   devices: [],
   actions: {},
+  pending: [],
+  models: null,
   recorder: null,
   chunks: [],
   busy: false,
+  recording: false,
+  voice: localStorage.getItem('na_voice') === '1',
+  screen: 'chat',
 };
+
+const SCREENS = {
+  chat: { title: 'Ассистент', icon: 'edit', action: 'Новый диалог' },
+  devices: { title: 'Устройства', icon: 'refresh', action: 'Обновить' },
+  activity: { title: 'Журнал', icon: 'refresh', action: 'Обновить' },
+  more: { title: 'Ещё', icon: null },
+};
+
+const SUGGESTIONS = [
+  'Сделай скриншот',
+  'Кто подключён к Wi-Fi?',
+  'Сколько заряда у телефона?',
+  'Поставь громкость 30%',
+];
+
+const EVENT_LABELS = {
+  agent_connected: 'подключился',
+  agent_disconnected: 'отключился',
+  command: 'команда',
+  confirmed: 'подтверждено',
+  model_switch: 'смена модели',
+  model_reset: 'сброс модели',
+  chat: 'диалог',
+};
+
+/* ─────────────────────────── утилиты ─────────────────────────── */
+
+function el(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text !== undefined && text !== null) node.textContent = String(text);
+  return node;
+}
+
+function esc(value) {
+  return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[ch]));
+}
+
+function shortModel(model) {
+  return String(model || '').split('/').pop();
+}
+
+function fmtTime(ts) {
+  if (!ts) return '';
+  const date = typeof ts === 'number' ? new Date(ts * 1000) : new Date(ts);
+  if (Number.isNaN(date.getTime())) return '';
+  const now = new Date();
+  const sameDay = date.toDateString() === now.toDateString();
+  const time = date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+  if (sameDay) return time;
+  const day = date.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' });
+  return `${day} ${time}`;
+}
+
+function haptic(type = 'light') {
+  try { tg && tg.HapticFeedback && tg.HapticFeedback.impactOccurred(type); } catch { /* noop */ }
+}
+
+let toastTimer = null;
+function toast(message) {
+  const node = $('#toast');
+  node.textContent = message;
+  node.classList.remove('hidden');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => node.classList.add('hidden'), 2600);
+}
 
 /* ─────────────────────────── API ─────────────────────────── */
 
@@ -17,9 +99,14 @@ async function api(path, options = {}) {
   if (options.body && !(options.body instanceof FormData)) {
     headers['Content-Type'] = 'application/json';
   }
-  const response = await fetch(path, { ...options, headers });
+  let response;
+  try {
+    response = await fetch(path, { ...options, headers, cache: 'no-store' });
+  } catch (error) {
+    throw new Error('нет связи с ядром');
+  }
   if (response.status === 401) {
-    showLogin('Токен неверный или истёк');
+    if ($('#login').classList.contains('hidden')) showLogin('Токен неверный или истёк');
     throw new Error('unauthorized');
   }
   const data = await response.json().catch(() => ({}));
@@ -27,38 +114,27 @@ async function api(path, options = {}) {
   return data;
 }
 
-/* ─────────────────────────── вход ─────────────────────────── */
+/* ─────────────────────────── Telegram ─────────────────────────── */
 
-function showLogin(message = '') {
-  $('#login').classList.remove('hidden');
-  $('#app').classList.add('hidden');
-  $('#login-error').textContent = message;
-  $('#token').focus();
+function initTelegram() {
+  if (!tg) return;
+  if (tg.initData) document.body.classList.add('tg-mode');
+  try { tg.ready(); tg.expand(); } catch { /* noop */ }
+  try { tg.disableVerticalSwipes && tg.disableVerticalSwipes(); } catch { /* noop */ }
+  try { tg.setHeaderColor('#111318'); tg.setBackgroundColor('#111318'); } catch { /* noop */ }
+  try { tg.BackButton.onClick(() => showScreen('chat')); } catch { /* noop */ }
+
+  const applyHeight = () => {
+    const height = tg.viewportStableHeight || window.innerHeight;
+    document.documentElement.style.setProperty('--app-height', `${height}px`);
+  };
+  applyHeight();
+  try { tg.onEvent('viewportChanged', applyHeight); } catch { /* noop */ }
+  window.addEventListener('resize', applyHeight);
 }
-
-async function boot() {
-  if (!state.token) await telegramLogin();
-  if (!state.token) return showLogin();
-  try {
-    await refreshAll();
-    state.planner = await fetchPlanner();
-    await loadModels();
-    $('#login').classList.add('hidden');
-    $('#app').classList.remove('hidden');
-    setStatus(onlineStatus(), true);
-    setInterval(() => { if (!$('#app').classList.contains('hidden')) refreshMeta(); }, 5000);
-  } catch (error) {
-    if (error.message !== 'unauthorized') showLogin(error.message);
-  }
-}
-
-/* ─────────────── вход через Telegram Mini App ─────────────── */
-
-const tg = window.Telegram && window.Telegram.WebApp;
 
 async function telegramLogin() {
-  if (!tg || !tg.initData) return;          // обычный браузер — форма токена
-  try { tg.ready(); tg.expand(); } catch {}
+  if (!tg || !tg.initData) return;
   try {
     const response = await fetch('/tg/auth', {
       method: 'POST',
@@ -71,315 +147,601 @@ async function telegramLogin() {
       state.token = data.token;
       localStorage.setItem('na_token', data.token);
     }
-  } catch { /* не вышло — покажем форму */ }
+  } catch { /* покажем форму токена */ }
 }
 
-function setStatus(text, ok) {
-  const el = $('#status');
-  el.textContent = text;
-  el.classList.toggle('ok', Boolean(ok));
-}
-
-function onlineStatus() {
-  const count = state.devices.filter(d => d.online).length;
-  return `онлайн · устройств: ${count}${state.planner ? ' · ' + state.planner : ''}`;
-}
-
-async function fetchPlanner() {
-  try {
-    const health = await api('/health');
-    if (!health.llm_configured) return 'ИИ не настроен';
-    if (health.llm_backend === 'opencode') {
-      const short = String(health.llm_model || '').split('/').pop();
-      return `ИИ: OpenCode · ${short}`;
-    }
-    return `ИИ: ${health.llm_model || 'облако'}`;
-  } catch {
-    return '';
+function pickSession() {
+  if (state.session) return;
+  const userId = tg && tg.initDataUnsafe && tg.initDataUnsafe.user
+    ? tg.initDataUnsafe.user.id : null;
+  if (userId) {
+    state.session = `tg-${userId}`;       // общая переписка с ботом в личном чате
+    return;
   }
-}
-
-/* ─────────────────────────── модель ИИ ─────────────────────────── */
-
-async function loadModels() {
-  const select = $('#model-select');
-  const hint = $('#model-hint');
-  if (!select) return;
-  try {
-    const data = await api('/models');
-    state.models = data;
-    select.innerHTML = '';
-    for (const model of data.models || []) {
-      const option = document.createElement('option');
-      option.value = model;
-      option.textContent = model.split('/').pop() + (model === data.current ? ' — текущая' : '');
-      select.appendChild(option);
-    }
-    if (!(data.models || []).length) {
-      const option = document.createElement('option');
-      option.value = data.current;
-      option.textContent = data.current;
-      select.appendChild(option);
-    }
-    select.value = data.current;
-    hint.textContent = data.custom
-      ? `выбрана вручную · по умолчанию: ${data.default}`
-      : `по умолчанию из .env: ${data.default}`;
-  } catch (error) {
-    hint.textContent = `список моделей недоступен: ${error.message}`;
+  let session = localStorage.getItem('na_session');
+  if (!session) {
+    session = `web-${Math.random().toString(36).slice(2, 10)}`;
+    localStorage.setItem('na_session', session);
   }
+  state.session = session;
 }
 
-async function applyModel() {
-  const button = $('#model-apply');
-  const model = $('#model-select').value;
-  if (!model) return;
-  button.disabled = true;
+/* ─────────────────────────── вход ─────────────────────────── */
+
+function showLogin(message = '') {
+  $('#login').classList.remove('hidden');
+  $('#app').classList.add('hidden');
+  $('#login-error').textContent = message;
+  if (state.token) $('#token').value = state.token;
+  setTimeout(() => { try { $('#token').focus(); } catch { /* noop */ } }, 120);
+}
+
+function showApp() {
+  $('#login').classList.add('hidden');
+  $('#app').classList.remove('hidden');
+}
+
+async function boot() {
+  initTelegram();
+  if (!state.token && tg && tg.initData) await telegramLogin();
+  if (!state.token) return showLogin();
+
+  pickSession();
   try {
-    const data = await api('/models', { method: 'POST', body: JSON.stringify({ model }) });
-    state.models = data;
-    await loadModels();
-    state.planner = await fetchPlanner();
-    setStatus(onlineStatus(), true);
-    $('#model-hint').textContent = `переключено на ${data.current}`;
+    await refreshMeta(true);
   } catch (error) {
-    $('#model-hint').textContent = `не удалось переключить: ${error.message}`;
-  } finally {
-    button.disabled = false;
+    if (error.message === 'unauthorized') return;
+  }
+  await Promise.all([loadModels(), loadHistory()]);
+  showApp();
+  updateAppbar();
+  syncVoiceToggle();
+  setInterval(() => {
+    if (!document.hidden && !$('#app').classList.contains('hidden')) refreshMeta();
+  }, 6000);
+}
+
+/* ─────────────────────────── экраны ─────────────────────────── */
+
+function showScreen(name) {
+  if (!SCREENS[name]) return;
+  state.screen = name;
+  $$('.screen').forEach((node) => node.classList.toggle('active', node.dataset.screen === name));
+  $$('.nav-item').forEach((node) => node.classList.toggle('active', node.dataset.screen === name));
+  $('#composer').classList.toggle('hidden', name !== 'chat');
+
+  if (tg && tg.BackButton) {
+    try { name === 'chat' ? tg.BackButton.hide() : tg.BackButton.show(); } catch { /* noop */ }
+  }
+  updateAppbar();
+
+  if (name === 'chat') scrollBottom();
+  if (name === 'devices') renderDevices();
+  if (name === 'activity') refreshMeta();
+  if (name === 'more') updateModelLabel();
+}
+
+function updateAppbar() {
+  const config = SCREENS[state.screen] || SCREENS.chat;
+  $('#screen-title').textContent = config.title;
+  const button = $('#appbar-action');
+  if (!config.icon) {
+    button.classList.add('hidden');
+    return;
+  }
+  button.classList.remove('hidden');
+  button.title = config.action || '';
+  button.innerHTML = `<svg><use href="#i-${config.icon}"></use></svg>`;
+  button.onclick = () => {
+    haptic();
+    if (config.icon === 'edit') newChat();
+    else refreshMeta();
+  };
+}
+
+function setOnline(ok) {
+  const status = $('#status');
+  status.classList.toggle('off', !ok);
+  const online = state.devices.filter((d) => d.online).length;
+  const total = state.devices.length;
+  const side = $('#side-status');
+  const sideModel = $('#side-model');
+
+  if (!ok) {
+    $('#status-text').textContent = 'нет связи с ядром';
+    if (side) side.textContent = 'нет связи с ядром';
+    return;
+  }
+  const parts = [];
+  parts.push(total ? `${online} из ${total} на связи` : 'нет устройств');
+  if (state.models && state.models.current) parts.push(shortModel(state.models.current));
+  $('#status-text').textContent = parts.join(' · ');
+  if (side) side.textContent = total ? `${online} из ${total} на связи` : 'нет устройств';
+  if (sideModel) {
+    sideModel.textContent = state.models && state.models.current
+      ? `ИИ: ${shortModel(state.models.current)}` : '';
   }
 }
 
 /* ─────────────────────────── данные ─────────────────────────── */
 
-async function refreshAll() {
-  const [devices, actions] = await Promise.all([api('/devices'), api('/actions')]);
-  state.devices = devices.devices;
-  state.actions = actions;
-  renderDevices();
-  fillSelectors();
-}
+async function refreshMeta(initial = false) {
+  const jobs = [api('/devices'), api('/pending'), api('/audit?limit=40')];
+  if (initial || !Object.keys(state.actions).length) jobs.push(api('/actions'));
+  const [devices, pending, audit, actions] = await Promise.all(jobs);
 
-async function refreshMeta() {
-  try {
-    const [devices, pending, audit] = await Promise.all([
-      api('/devices'), api('/pending'), api('/audit?limit=25'),
-    ]);
-    state.devices = devices.devices;
-    renderDevices();
-    fillSelectors();
-    renderPending(pending.pending);
-    renderAudit(audit.records);
-    setStatus(onlineStatus(), true);
-  } catch (error) {
-    if (error.message !== 'unauthorized') setStatus('нет связи с ядром', false);
-  }
+  state.devices = devices.devices || [];
+  state.pending = pending.pending || [];
+  if (actions) state.actions = actions;
+
+  renderDevices();
+  renderPending();
+  renderAudit(audit.records || []);
+  updateBadge();
+  setOnline(true);
 }
 
 function renderDevices() {
   const box = $('#devices');
+  if (!box) return;
   box.innerHTML = '';
-  $('#device-count').textContent = String(state.devices.length);
   if (!state.devices.length) {
-    box.innerHTML = '<p class="muted">Ни одно устройство не подключено.</p>';
+    box.append(el('div', 'pending-empty', 'Ни одно устройство не подключено.'));
     return;
   }
   for (const device of state.devices) {
-    const card = document.createElement('div');
-    card.className = `device ${device.online ? 'online' : 'offline'}`;
-    card.innerHTML = `
-      <div class="name"><span>${escapeHtml(device.name)}</span><span class="dot"></span></div>
-      <div class="meta">${escapeHtml(device.device_id)} · ${escapeHtml(device.platform)} ·
-        команд: ${device.actions.length}</div>`;
-    card.onclick = () => {
-      $('#cmd-device').value = device.device_id;
-      fillActions();
-    };
-    box.appendChild(card);
+    const card = el('button', 'device-card ripple-host');
+    const icon = el('span', 'device-icon');
+    icon.innerHTML = `<svg><use href="#i-${platformIcon(device.platform)}"></use></svg>`;
+    const main = el('span', 'device-main');
+    main.append(el('span', 'device-name', device.name || device.device_id));
+    main.append(el('span', 'device-sub',
+      `${device.platform || 'unknown'} · ${device.device_id} · команд: ${(device.available_actions || []).length}`));
+    const pill = el('span', `status-pill${device.online ? '' : ' off'}`, device.online ? 'в сети' : 'офлайн');
+    card.append(icon, main, pill);
+    card.onclick = () => { haptic(); openDeviceSheet(device); };
+    box.append(card);
   }
+  renderSideDevices();
 }
 
-function fillSelectors() {
-  const deviceSelect = $('#cmd-device');
-  const previous = deviceSelect.value;
-  deviceSelect.innerHTML = '';
+function renderSideDevices() {
+  const box = $('#side-devices');
+  if (!box) return;
+  box.innerHTML = '';
+  if (!state.devices.length) {
+    box.append(el('div', 'side-empty', 'нет устройств'));
+    return;
+  }
   for (const device of state.devices) {
-    const option = document.createElement('option');
-    option.value = device.device_id;
-    option.textContent = `${device.name}${device.online ? '' : ' (офлайн)'}`;
-    deviceSelect.appendChild(option);
+    const row = el('div', 'side-device');
+    row.append(el('span', `side-dot${device.online ? ' on' : ''}`));
+    row.append(el('span', 'side-device-name', device.name || device.device_id));
+    box.append(row);
   }
-  if (previous) deviceSelect.value = previous;
-  fillActions();
 }
 
-function fillActions() {
-  const deviceId = $('#cmd-device').value;
-  const device = state.devices.find(d => d.device_id === deviceId);
-  const select = $('#cmd-action');
-  const previous = select.value;
-  select.innerHTML = '';
-  if (!device) return;
-  for (const name of device.available_actions || []) {
-    const option = document.createElement('option');
-    option.value = name;
+function platformIcon(platform) {
+  const value = String(platform || '').toLowerCase();
+  if (value.includes('android')) return 'phone';
+  if (value.includes('win') || value === 'pc') return 'monitor';
+  if (value.includes('router') || value.includes('openwrt')) return 'wifi';
+  return 'devices';
+}
+
+function openDeviceSheet(device) {
+  const body = document.createDocumentFragment();
+  body.append(el('p', 'sheet-text',
+    `${device.online ? 'В сети' : 'Офлайн'} · ${device.platform || 'unknown'} · ${device.device_id}`));
+
+  const list = el('div', 'sheet-actions');
+  const actions = device.available_actions || [];
+  if (!actions.length) {
+    body.append(el('p', 'sheet-text', 'Для этого устройства нет доступных команд.'));
+  }
+  for (const name of actions) {
     const entry = state.actions[name] || {};
-    option.textContent = entry.dangerous ? `${name} ⚠` : name;
-    select.appendChild(option);
+    const button = el('button', 'sheet-action ripple-host');
+    button.innerHTML = `<svg><use href="#i-${entry.dangerous ? 'alert' : 'chevron'}"></use></svg>`;
+    const text = el('span');
+    text.innerHTML = `<span>${esc(name)}</span>`;
+    if (entry.dangerous) {
+      const badge = el('span', 'code', ' · опасно');
+      text.append(badge);
+    }
+    button.append(text);
+    button.onclick = () => openActionSheet(device, name);
+    list.append(button);
   }
-  // автообновление не должно сбрасывать выбор пользователя
-  const stillThere = Array.from(select.options).some(o => o.value === previous);
-  if (stillThere) {
-    select.value = previous;
-  } else {
-    updateArgsTemplate();
-  }
+  body.append(list);
+  openSheet(device.name || device.device_id, body);
 }
 
-function updateArgsTemplate() {
-  const entry = state.actions[$('#cmd-action').value] || {};
+function openActionSheet(device, actionName) {
+  const entry = state.actions[actionName] || {};
+  const body = document.createDocumentFragment();
+  if (entry.desc) body.append(el('p', 'sheet-text', entry.desc));
+
   const skeleton = {};
   for (const [name, rule] of Object.entries(entry.args || {})) {
     if (rule.required) skeleton[name] = rule.type === 'int' || rule.type === 'float' ? 0 : '';
   }
-  $('#cmd-args').value = JSON.stringify(skeleton, null, 2);
+  const area = el('textarea');
+  area.spellcheck = false;
+  area.value = JSON.stringify(skeleton, null, 2);
+  body.append(area);
+
+  const run = el('button', 'btn filled ripple-host', 'Выполнить');
+  const result = el('div', 'sheet-result');
+  run.onclick = async () => {
+    let args;
+    try {
+      args = JSON.parse(area.value || '{}');
+    } catch (error) {
+      result.innerHTML = '';
+      result.append(el('p', 'sheet-text', `Аргументы не JSON: ${error.message}`));
+      return;
+    }
+    await runDirect(device.device_id, actionName, args, result, run);
+  };
+  body.append(run, result);
+  openSheet(`${device.name || device.device_id} · ${actionName}`, body);
 }
 
-/* ─────────────────────────── подтверждения ─────────────────────────── */
-
-function renderPending(items) {
-  const box = $('#pending');
-  box.innerHTML = '';
-  if (!items || !items.length) {
-    box.innerHTML = '<p class="muted">нет ожидающих действий</p>';
-    return;
-  }
-  for (const item of items) {
-    const card = document.createElement('div');
-    card.className = 'item';
-    card.innerHTML = `<div class="q">${escapeHtml(item.question)}</div>`;
-    const actions = document.createElement('div');
-    actions.className = 'actions';
-
-    const confirmButton = document.createElement('button');
-    confirmButton.className = 'ok small';
-    confirmButton.textContent = 'Подтвердить';
-    confirmButton.onclick = () => confirmAction(item.token);
-
-    const cancelButton = document.createElement('button');
-    cancelButton.className = 'ghost small';
-    cancelButton.textContent = 'Отмена';
-    cancelButton.onclick = () => sendMessage('отмена');
-
-    actions.append(confirmButton, cancelButton);
-    card.appendChild(actions);
-    box.appendChild(card);
-  }
-}
-
-async function confirmAction(token) {
+async function runDirect(deviceId, actionName, args, resultBox, button) {
+  button.disabled = true;
+  resultBox.innerHTML = '';
+  resultBox.append(el('p', 'sheet-text', 'выполняю…'));
   try {
-    const result = await api(`/confirm/${token}`, { method: 'POST' });
-    addMessage('bot', `Готово: ${result.action} → ${JSON.stringify(result.result)}`);
+    const response = await api('/cmd', {
+      method: 'POST',
+      body: JSON.stringify({ device: deviceId, action: actionName, args }),
+    });
+    resultBox.innerHTML = '';
+    if (response.status === 'awaiting_confirmation') {
+      const card = el('div', 'pending-card');
+      card.append(el('div', 'pending-q', response.question || 'Требуется подтверждение'));
+      const ok = el('button', 'btn filled', 'Подтвердить');
+      ok.onclick = async () => {
+        ok.disabled = true;
+        try {
+          await api(`/confirm/${encodeURIComponent(response.token)}?session=${encodeURIComponent(state.session)}`,
+            { method: 'POST' });
+          resultBox.innerHTML = '';
+          resultBox.append(el('p', 'sheet-text', 'Выполнено.'));
+          toast('Выполнено');
+          closeSheet();
+          refreshMeta();
+          if (state.screen === 'chat') loadHistory();
+        } catch (error) {
+          toast(`Ошибка: ${error.message}`);
+          ok.disabled = false;
+        }
+      };
+      card.append(ok);
+      resultBox.append(card);
+      return;
+    }
+    const pre = el('pre');
+    pre.textContent = JSON.stringify(response.result, null, 2);
+    resultBox.append(pre);
+    if (response.result && response.result.url) {
+      const image = el('img');
+      image.src = response.result.url;
+      image.onclick = () => openViewer(image.src);
+      resultBox.append(image);
+    }
+    toast('Готово');
+    refreshMeta();
   } catch (error) {
-    addMessage('system', `ошибка подтверждения: ${error.message}`);
+    resultBox.innerHTML = '';
+    resultBox.append(el('p', 'sheet-text', `Ошибка: ${error.message}`));
+  } finally {
+    button.disabled = false;
   }
-  refreshMeta();
 }
 
 /* ─────────────────────────── журнал ─────────────────────────── */
 
+function renderPending() {
+  const box = $('#pending');
+  if (!box) return;
+  box.innerHTML = '';
+  if (!state.pending.length) {
+    box.append(el('div', 'pending-empty', 'Нет действий, ожидающих подтверждения'));
+    return;
+  }
+  for (const item of state.pending) {
+    const card = el('div', 'pending-card');
+    card.append(el('div', 'pending-q', item.question || 'Подтвердить действие?'));
+    const row = el('div', 'confirm-actions');
+    const ok = el('button', 'btn filled', 'Подтвердить');
+    ok.onclick = () => confirmPending(item.token, ok);
+    const cancel = el('button', 'btn text', 'Отмена');
+    cancel.onclick = () => { closeSheet(); sendMessage('отмена'); };
+    row.append(ok, cancel);
+    card.append(row);
+    box.append(card);
+  }
+}
+
+function updateBadge() {
+  const badge = $('#pending-badge');
+  if (!badge) return;
+  if (state.pending.length) {
+    badge.textContent = String(state.pending.length);
+    badge.classList.remove('hidden');
+  } else {
+    badge.classList.add('hidden');
+  }
+}
+
 function renderAudit(records) {
   const box = $('#audit');
+  if (!box) return;
   box.innerHTML = '';
-  if (!records || !records.length) {
-    box.innerHTML = '<p class="muted">пусто</p>';
+  if (!records.length) {
+    box.append(el('div', 'audit-empty', 'Пока пусто'));
     return;
   }
   for (const record of records) {
-    const row = document.createElement('div');
-    row.className = 'audit-row';
-    const detail = record.action || record.platform || '';
-    const extra = record.ok === false ? ' ✕' : '';
-    row.innerHTML = `<span class="t">${escapeHtml((record.iso || '').slice(11))}</span>
-      <span class="e ${escapeHtml(record.event)}">${escapeHtml(record.event)}</span>
-      <span class="muted">${escapeHtml(record.device || '')} ${escapeHtml(detail)}${extra}</span>`;
-    box.appendChild(row);
+    const row = el('div', 'audit-row');
+    row.append(el('span', 'audit-time', (record.iso || '').slice(11, 19)));
+    row.append(el('span', `audit-event ${record.ok === false ? 'fail' : 'info'}`,
+      EVENT_LABELS[record.event] || record.event || ''));
+    row.append(el('span', 'audit-detail',
+      [record.device, record.action].filter(Boolean).join(' · ') || record.platform || ''));
+    box.append(row);
   }
 }
 
 /* ─────────────────────────── чат ─────────────────────────── */
 
-function addMessage(role, text, executed) {
-  const box = $('#messages');
-  const message = document.createElement('div');
-  message.className = `msg ${role}`;
-  message.textContent = text;
-
-  if (executed && executed.length) {
-    for (const item of executed) {
-      if (item.result && item.result.url) {
-        const image = document.createElement('img');
-        image.src = item.result.url;
-        image.alt = 'результат команды';
-        message.appendChild(image);
-      }
-    }
-    const details = document.createElement('details');
-    const summary = document.createElement('summary');
-    summary.textContent = `выполнено команд: ${executed.length}`;
-    details.appendChild(summary);
-    for (const item of executed) {
-      const pre = document.createElement('pre');
-      const status = item.ok === false ? 'ошибка' : 'ok';
-      const payload = item.result ? JSON.stringify(item.result, null, 2).slice(0, 1200) : '';
-      pre.textContent = `${item.device} :: ${item.action} → ${status}\n${payload}`;
-      details.appendChild(pre);
-    }
-    message.appendChild(details);
+async function loadHistory() {
+  try {
+    const data = await api(`/history?session=${encodeURIComponent(state.session)}&limit=200`);
+    renderHistory(data.messages || []);
+  } catch (error) {
+    if (error.message !== 'unauthorized') renderHistory([]);
   }
-
-  box.appendChild(message);
-  box.scrollTop = box.scrollHeight;
-  return message;
 }
 
-async function sendMessage(text) {
+function renderHistory(messages) {
+  const box = $('#messages');
+  box.innerHTML = '';
+  if (!messages.length) {
+    renderEmptyState();
+    return;
+  }
+  for (const message of messages) {
+    appendMessage(message.role, message.text, message.executed, message.pending, message.ts);
+  }
+  scrollBottom(true);
+}
+
+function renderEmptyState() {
+  const box = $('#messages');
+  if (box.querySelector('.empty')) return;
+  const wrap = el('div', 'empty');
+  const icon = el('div', 'empty-icon');
+  icon.innerHTML = '<svg><use href="#i-logo"></use></svg>';
+  wrap.append(icon, el('h3', null, 'Чем помочь?'));
+  wrap.append(el('p', null, 'Напишите задачу словами — ассистент сам выберет устройство и команду.'));
+  const chips = el('div', 'chips');
+  for (const text of SUGGESTIONS) {
+    const chip = el('button', 'chip ripple-host', text);
+    chip.onclick = () => { haptic(); sendMessage(text); };
+    chips.append(chip);
+  }
+  wrap.append(chips);
+  box.append(wrap);
+}
+
+function hideEmpty() {
+  const empty = $('#messages .empty');
+  if (empty) empty.remove();
+}
+
+function appendMessage(role, text, executed, pending, ts) {
+  const box = $('#messages');
+  hideEmpty();
+  const row = el('div', `msg-row ${role}`);
+
+  if (role === 'system') {
+    row.append(el('div', 'msg-system', text));
+    box.append(row);
+    return row;
+  }
+
+  const bubble = el('div', 'bubble');
+  bubble.append(el('div', 'msg-text', text || ''));
+
+  if (Array.isArray(executed) && executed.length) {
+    bubble.append(actionsBlock(executed));
+    const details = detailsBlock(executed);
+    if (details) bubble.append(details);
+    for (const item of executed) {
+      const url = item && item.result && item.result.url;
+      if (url) {
+        const image = el('img', 'msg-shot');
+        image.src = url;
+        image.alt = 'результат команды';
+        image.loading = 'lazy';
+        image.onclick = () => openViewer(url);
+        image.addEventListener('load', () => scrollBottom());
+        bubble.append(image);
+      }
+    }
+  }
+
+  if (Array.isArray(pending) && pending.length) {
+    bubble.append(pendingBlock(pending));
+  }
+
+  bubble.append(el('div', 'msg-meta', fmtTime(ts || Date.now() / 1000)));
+  row.append(bubble);
+  box.append(row);
+  return row;
+}
+
+function actionsBlock(executed) {
+  const wrap = el('div', 'msg-actions');
+  for (const item of executed) {
+    const ok = item.ok !== false;
+    const chip = el('button', `action-chip ${ok ? 'ok' : 'fail'} ripple-host`);
+    chip.innerHTML = `<svg><use href="#i-${ok ? 'check' : 'close'}"></use></svg>`;
+    const label = [item.device, item.action].filter(Boolean).join(' · ') || 'действие';
+    chip.append(el('span', null, label));
+    chip.onclick = () => openExecutedSheet(item);
+    wrap.append(chip);
+  }
+  return wrap;
+}
+
+function detailsBlock(executed) {
+  const details = el('details', 'msg-details');
+  details.append(el('summary', null, `выполнено команд: ${executed.length}`));
+  for (const item of executed) {
+    const pre = el('pre');
+    const status = item.ok === false ? 'ошибка' : 'ok';
+    const payload = item.result === undefined ? '' : JSON.stringify(item.result, null, 2);
+    pre.textContent = `${item.device || ''} :: ${item.action || ''} → ${status}\n${payload.slice(0, 1500)}`;
+    details.append(pre);
+  }
+  return details;
+}
+
+function pendingBlock(items) {
+  const card = el('div', 'confirm-card');
+  const head = el('div', 'confirm-head');
+  head.innerHTML = '<svg><use href="#i-alert"></use></svg>';
+  head.append(el('span', null, 'Требуется подтверждение'));
+  card.append(head);
+  for (const item of items) {
+    card.append(el('div', 'confirm-q', item.question || `Подтвердить ${item.token}?`));
+    const row = el('div', 'confirm-actions');
+    const ok = el('button', 'btn filled', 'Подтвердить');
+    ok.onclick = () => confirmPending(item.token, ok);
+    const cancel = el('button', 'btn text', 'Отмена');
+    cancel.onclick = () => sendMessage('отмена');
+    row.append(ok, cancel);
+    card.append(row);
+  }
+  return card;
+}
+
+function openExecutedSheet(item) {
+  const body = document.createElement('div');
+  const pre = el('pre');
+  pre.textContent = JSON.stringify(item.result === undefined ? item : item.result, null, 2);
+  body.append(pre);
+  if (item.result && item.result.url) {
+    const image = el('img');
+    image.src = item.result.url;
+    image.style.cssText = 'width:100%;border-radius:12px;margin-top:10px;background:#000';
+    image.onclick = () => openViewer(image.src);
+    body.append(image);
+  }
+  openSheet([item.device, item.action].filter(Boolean).join(' · ') || 'Результат', body);
+}
+
+function scrollBottom(force = false) {
+  const box = $('#messages');
+  if (!box) return;
+  if (!force) {
+    const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 420;
+    if (!nearBottom) return;
+  }
+  requestAnimationFrame(() => { box.scrollTop = box.scrollHeight; });
+}
+
+function appendTyping() {
+  hideEmpty();
+  const row = el('div', 'msg-row assistant');
+  const bubble = el('div', 'bubble');
+  const dots = el('div', 'typing');
+  dots.append(el('span'), el('span'), el('span'));
+  bubble.append(dots);
+  row.append(bubble);
+  $('#messages').append(row);
+  scrollBottom(true);
+  return row;
+}
+
+async function sendMessage(rawText) {
+  const text = String(rawText || '').trim();
   if (!text || state.busy) return;
   state.busy = true;
-  $('#send').disabled = true;
-  addMessage('user', text);
-  const thinking = addMessage('bot', '…');
+  updateSend();
+  haptic('medium');
+
+  appendMessage('user', text, null, null, Date.now() / 1000);
+  scrollBottom(true);
+  const typing = appendTyping();
+
   try {
-    const result = await api('/chat', { method: 'POST', body: JSON.stringify({ message: text }) });
-    thinking.remove();
-    addMessage('bot', result.reply || '(пустой ответ)', result.executed);
-    if (result.pending && result.pending.length) {
-      addMessage('system', `нужно подтверждение: ${result.pending.map(p => p.token).join(', ')}`);
-    }
-    if ($('#voice-reply').checked) speak(result.reply);
-    refreshMeta();
+    const result = await api('/chat', {
+      method: 'POST',
+      body: JSON.stringify({ message: text, session: state.session }),
+    });
+    typing.remove();
+    appendMessage('assistant', result.reply || '(пустой ответ)',
+      result.executed, result.pending, Date.now() / 1000);
+    scrollBottom();
+    if (result.pending && result.pending.length) refreshMeta();
+    if (state.voice && result.reply) speak(result.reply);
   } catch (error) {
-    thinking.remove();
-    addMessage('system', `ошибка: ${error.message}`);
+    typing.remove();
+    if (error.message !== 'unauthorized') {
+      appendMessage('system', `Ошибка: ${error.message}`);
+      scrollBottom(true);
+    }
   } finally {
     state.busy = false;
-    $('#send').disabled = false;
+    updateSend();
+    refreshMeta().catch(() => {});
   }
+}
+
+async function confirmPending(token, button) {
+  if (button) button.disabled = true;
+  try {
+    await api(`/confirm/${encodeURIComponent(token)}?session=${encodeURIComponent(state.session)}`,
+      { method: 'POST' });
+    toast('Выполнено');
+    if (state.screen === 'chat') await loadHistory();
+    await refreshMeta();
+  } catch (error) {
+    if (error.message !== 'unauthorized') toast(`Ошибка: ${error.message}`);
+    if (button) button.disabled = false;
+  }
+}
+
+function newChat() {
+  openDialog('Начать новый диалог?', 'История текущего диалога будет удалена на сервере.',
+    'Очистить', async () => {
+      try {
+        await api(`/session/${encodeURIComponent(state.session)}`, { method: 'DELETE' });
+      } catch { /* не критично */ }
+      renderHistory([]);
+      refreshMeta().catch(() => {});
+      toast('История очищена');
+      haptic();
+    });
 }
 
 function speak(text) {
   if (!text || !window.speechSynthesis) return;
   const utterance = new SpeechSynthesisUtterance(text);
   utterance.lang = 'ru-RU';
-  speechSynthesis.cancel();
-  speechSynthesis.speak(utterance);
+  window.speechSynthesis.cancel();
+  window.speechSynthesis.speak(utterance);
 }
 
 /* ─────────────────────────── голос ─────────────────────────── */
 
 async function toggleRecording() {
-  const button = $('#mic');
-  if (state.recorder && state.recorder.state === 'recording') {
+  if (state.recording && state.recorder) {
     state.recorder.stop();
     return;
   }
@@ -389,83 +751,153 @@ async function toggleRecording() {
     state.recorder = new MediaRecorder(stream);
     state.recorder.ondataavailable = (event) => state.chunks.push(event.data);
     state.recorder.onstop = async () => {
-      stream.getTracks().forEach(track => track.stop());
-      button.classList.remove('recording');
+      stream.getTracks().forEach((track) => track.stop());
+      state.recording = false;
+      $('#mic').classList.remove('recording');
       const blob = new Blob(state.chunks, { type: state.recorder.mimeType || 'audio/webm' });
       await sendVoice(blob);
     };
     state.recorder.start();
-    button.classList.add('recording');
+    state.recording = true;
+    $('#mic').classList.add('recording');
+    haptic();
   } catch (error) {
-    addMessage('system', `микрофон недоступен: ${error.message}`);
+    appendMessage('system', `Микрофон недоступен: ${error.message}`);
+    scrollBottom(true);
   }
 }
 
 async function sendVoice(blob) {
-  const form = new FormData();
-  form.append('file', blob, 'voice.webm');
-  const thinking = addMessage('system', 'распознаю…');
+  const typing = appendTyping();
   try {
-    const result = await api('/voice?chat=true', { method: 'POST', body: form });
-    thinking.remove();
-    if (!result.text) return addMessage('system', 'речь не распознана');
-    addMessage('user', result.text);
-    if (result.reply) {
-      addMessage('bot', result.reply, result.executed);
-      if ($('#voice-reply').checked) speak(result.reply);
-    }
-  } catch (error) {
-    thinking.remove();
-    addMessage('system', `голос: ${error.message}`);
-  }
-}
-
-/* ─────────────────────────── прямые команды ─────────────────────────── */
-
-async function runCommand() {
-  const device = $('#cmd-device').value;
-  const action = $('#cmd-action').value;
-  if (!device || !action) return;
-  let args = {};
-  try {
-    args = JSON.parse($('#cmd-args').value || '{}');
-  } catch (error) {
-    $('#cmd-result').textContent = `аргументы не JSON: ${error.message}`;
-    return;
-  }
-  const box = $('#cmd-result');
-  box.textContent = 'выполняю…';
-  try {
-    const result = await api('/cmd', {
-      method: 'POST',
-      body: JSON.stringify({ device, action, args }),
-    });
-    box.textContent = '';
-    if (result.status === 'awaiting_confirmation') {
-      box.textContent = `нужно подтверждение (${result.token}): ${result.question}`;
-      refreshMeta();
+    const form = new FormData();
+    form.append('file', blob, 'voice.webm');
+    const result = await api(`/voice?chat=true&session=${encodeURIComponent(state.session)}`,
+      { method: 'POST', body: form });
+    typing.remove();
+    if (!result.text) {
+      appendMessage('system', 'Речь не распознана');
+      scrollBottom(true);
       return;
     }
-    const pre = document.createElement('pre');
-    pre.textContent = JSON.stringify(result.result, null, 2);
-    box.appendChild(pre);
-    if (result.result && result.result.url) {
-      const image = document.createElement('img');
-      image.src = result.result.url;
-      box.appendChild(image);
-    }
+    await loadHistory();
+    if (state.voice && result.reply) speak(result.reply);
   } catch (error) {
-    box.textContent = `ошибка: ${error.message}`;
+    typing.remove();
+    if (error.message !== 'unauthorized') {
+      appendMessage('system', `Голос: ${error.message}`);
+      scrollBottom(true);
+    }
   }
-  refreshMeta();
 }
 
-/* ─────────────────────────── утилиты ─────────────────────────── */
+/* ─────────────────────────── модели ─────────────────────────── */
 
-function escapeHtml(value) {
-  return String(value ?? '').replace(/[&<>"']/g, (char) => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-  }[char]));
+async function loadModels() {
+  try {
+    state.models = await api('/models');
+    updateModelLabel();
+  } catch (error) {
+    $('#model-current').textContent = 'список недоступен';
+  }
+}
+
+function updateModelLabel() {
+  const label = $('#model-current');
+  if (!label) return;
+  if (!state.models || !state.models.current) {
+    label.textContent = 'не выбрана';
+    return;
+  }
+  label.textContent = shortModel(state.models.current)
+    + (state.models.custom ? ' · выбрана вручную' : ' · по умолчанию');
+  const sideModel = $('#side-model');
+  if (sideModel) sideModel.textContent = `ИИ: ${shortModel(state.models.current)}`;
+  setOnline(!$('#status').classList.contains('off'));
+}
+
+function openModelsSheet() {
+  const body = document.createElement('div');
+  body.append(el('p', 'sheet-text', 'Модель планировщика. Переключение действует сразу, без перезапуска ядра.'));
+
+  const list = el('div', 'sheet-actions');
+  const data = state.models || { models: [], current: '' };
+  const models = (data.models && data.models.length) ? data.models : (data.current ? [data.current] : []);
+  if (!models.length) body.append(el('p', 'sheet-text', 'Список моделей пуст.'));
+
+  for (const model of models) {
+    const option = el('button', `model-option ripple-host${model === data.current ? ' current' : ''}`);
+    option.append(el('span', 'radio'));
+    option.append(el('span', 'name', model));
+    option.onclick = async () => {
+      option.disabled = true;
+      try {
+        state.models = await api('/models', {
+          method: 'POST',
+          body: JSON.stringify({ model }),
+        });
+        updateModelLabel();
+        closeSheet();
+        toast(`Модель: ${shortModel(model)}`);
+        haptic();
+      } catch (error) {
+        toast(`Не удалось: ${error.message}`);
+        option.disabled = false;
+      }
+    };
+    list.append(option);
+  }
+  body.append(list);
+  openSheet('Модель ИИ', body);
+}
+
+/* ─────────────────────────── слои поверх ─────────────────────────── */
+
+function openSheet(title, content) {
+  $('#sheet-title').textContent = title;
+  const body = $('#sheet-body');
+  body.innerHTML = '';
+  body.append(content);
+  body.scrollTop = 0;
+  $('#sheet').classList.remove('hidden');
+  $('#scrim').classList.remove('hidden');
+}
+
+function closeSheet() {
+  $('#sheet').classList.add('hidden');
+  $('#scrim').classList.add('hidden');
+}
+
+let dialogAction = null;
+
+function openDialog(title, text, okLabel, onOk) {
+  $('#dialog-title').textContent = title;
+  $('#dialog-text').textContent = text;
+  $('#dialog-ok').textContent = okLabel || 'ОК';
+  dialogAction = onOk || null;
+  $('#dialog').classList.remove('hidden');
+}
+
+function closeDialog() {
+  $('#dialog').classList.add('hidden');
+  dialogAction = null;
+}
+
+function openViewer(url) {
+  $('#viewer-img').src = url;
+  $('#viewer').classList.remove('hidden');
+}
+
+function syncVoiceToggle() {
+  const checkbox = $('#voice-reply');
+  if (checkbox) checkbox.checked = state.voice;
+}
+
+function updateSend() {
+  const input = $('#message');
+  const button = $('#send');
+  if (!input || !button) return;
+  button.disabled = state.busy || !input.value.trim();
 }
 
 /* ─────────────────────────── обработчики ─────────────────────────── */
@@ -475,42 +907,116 @@ $('#save-token').onclick = async () => {
   if (!token) return;
   state.token = token;
   try {
-    await refreshAll();
-    state.planner = await fetchPlanner();
+    const devices = await api('/devices');
     localStorage.setItem('na_token', token);
-    $('#login').classList.add('hidden');
-    $('#app').classList.remove('hidden');
-    setStatus(onlineStatus(), true);
+    state.devices = devices.devices || [];
+    pickSession();
+    await refreshMeta(true);
+    await Promise.all([loadModels(), loadHistory()]);
+    showApp();
+    updateAppbar();
+    syncVoiceToggle();
   } catch (error) {
-    $('#login-error').textContent = error.message;
+    if (error.message !== 'unauthorized') $('#login-error').textContent = error.message;
   }
 };
 
-$('#change-token').onclick = () => showLogin();
 $('#token').addEventListener('keydown', (event) => {
   if (event.key === 'Enter') $('#save-token').click();
 });
+
+$('#change-token').onclick = () => showLogin();
+
+$$('.nav-item').forEach((item) => {
+  item.onclick = () => {
+    haptic();
+    showScreen(item.dataset.screen);
+  };
+});
+
 $('#send').onclick = () => {
-  const text = $('#message').value.trim();
-  $('#message').value = '';
+  const input = $('#message');
+  const text = input.value;
+  input.value = '';
+  autoGrow();
   sendMessage(text);
 };
+
+$('#message').addEventListener('input', autoGrow);
 $('#message').addEventListener('keydown', (event) => {
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault();
     $('#send').click();
   }
 });
+
 $('#mic').onclick = toggleRecording;
-$('#cmd-device').onchange = fillActions;
-$('#cmd-action').onchange = updateArgsTemplate;
-$('#cmd-run').onclick = runCommand;
-$('#model-apply').onclick = applyModel;
-$('#model-select').onchange = () => { $('#model-hint').textContent = 'нажмите «Переключить», чтобы применить'; };
-$('#new-chat').onclick = async () => {
-  try { await api('/session/default', { method: 'DELETE' }); } catch (_) { /* не критично */ }
-  $('#messages').innerHTML = '';
-  addMessage('system', 'контекст очищен');
+
+$('#sheet-close').onclick = closeSheet;
+$('#scrim').onclick = closeSheet;
+
+$('#dialog-ok').onclick = async () => {
+  const action = dialogAction;
+  closeDialog();
+  if (action) await action();
+};
+$('#dialog-cancel').onclick = closeDialog;
+
+$('#viewer').onclick = () => {
+  $('#viewer').classList.add('hidden');
+  $('#viewer-img').src = '';
+};
+$('#viewer-close').onclick = (event) => {
+  event.stopPropagation();
+  $('#viewer').classList.add('hidden');
+  $('#viewer-img').src = '';
 };
 
+$('#open-models').onclick = () => { haptic(); openModelsSheet(); };
+
+$('#clear-chat').onclick = () => {
+  openDialog('Очистить историю?', 'Переписка будет удалена на сервере без возможности восстановления.',
+    'Очистить', async () => {
+      try {
+        await api(`/session/${encodeURIComponent(state.session)}`, { method: 'DELETE' });
+        renderHistory([]);
+        refreshMeta().catch(() => {});
+        toast('История очищена');
+      } catch (error) {
+        toast(`Ошибка: ${error.message}`);
+      }
+    });
+};
+
+$('#voice-reply').addEventListener('change', (event) => {
+  state.voice = event.target.checked;
+  localStorage.setItem('na_voice', state.voice ? '1' : '0');
+  toast(state.voice ? 'Ответы будут озвучиваться' : 'Озвучивание выключено');
+});
+
+/* рябь на кнопках */
+document.addEventListener('pointerdown', (event) => {
+  const host = event.target.closest('.ripple-host');
+  if (!host) return;
+  const rect = host.getBoundingClientRect();
+  const size = Math.max(rect.width, rect.height) * 2;
+  const ripple = document.createElement('span');
+  ripple.className = 'ripple';
+  ripple.style.width = `${size}px`;
+  ripple.style.height = `${size}px`;
+  ripple.style.left = `${event.clientX - rect.left - size / 2}px`;
+  ripple.style.top = `${event.clientY - rect.top - size / 2}px`;
+  host.append(ripple);
+  setTimeout(() => ripple.remove(), 520);
+}, { passive: true });
+
+function autoGrow() {
+  const input = $('#message');
+  if (!input) return;
+  input.style.height = 'auto';
+  input.style.height = `${Math.min(input.scrollHeight, 128)}px`;
+  updateSend();
+}
+
+updateSend();
 boot();

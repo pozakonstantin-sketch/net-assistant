@@ -200,19 +200,34 @@ echo "== Python-зависимости =="
 # python-pip уже приходит вместе с пакетом python.
 python -m pip install -q --no-input -r "$DIR/requirements-termux.txt"
 
-echo "== Автозапуск =="
-mkdir -p "$HOME/.termux/boot"
-cat > "$HOME/.termux/boot/start-agent.sh" <<EOF
+echo "== Запуск и автозапуск =="
+# Отдельный скрипт запуска: работает и после перезагрузки (Termux:Boot),
+# и при ручном запуске — важно задать окружение Termux, иначе termux-*
+# команды не находятся (FileNotFoundError: termux-battery-status).
+cat > "$HOME/start-agent.sh" <<'EOS'
 #!/data/data/com.termux/files/usr/bin/sh
-termux-wake-lock
-cd "$DIR" && exec python -m agents.android_agent
-EOF
+export HOME="${HOME:-/data/data/com.termux/files/home}"
+export PREFIX=/data/data/com.termux/files/usr
+export PATH="$PREFIX/bin:/system/bin:/system/xbin"
+export TMPDIR="$PREFIX/tmp"
+export LD_PRELOAD="$PREFIX/lib/libtermux-exec.so"
+export LANG=en_US.UTF-8
+termux-wake-lock >/dev/null 2>&1 || true
+cd "$HOME/net-assistant" || exit 1
+exec python -m agents.android_agent
+EOS
+chmod +x "$HOME/start-agent.sh"
+
+mkdir -p "$HOME/.termux/boot"
+cat > "$HOME/.termux/boot/start-agent.sh" <<'EOS'
+#!/data/data/com.termux/files/usr/bin/sh
+exec "$HOME/start-agent.sh" >> "$HOME/agent.log" 2>&1
+EOS
 chmod +x "$HOME/.termux/boot/start-agent.sh"
 
 termux-wake-lock >/dev/null 2>&1 || true
 pkill -f 'agents.android_agent' >/dev/null 2>&1 || true
-cd "$DIR"
-nohup python -m agents.android_agent >> "$HOME/agent.log" 2>&1 &
+nohup "$HOME/start-agent.sh" >> "$HOME/agent.log" 2>&1 &
 sleep 2
 
 echo

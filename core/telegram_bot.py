@@ -358,6 +358,23 @@ class Telegram:
         except RuntimeError as exc:
             log.warning("не удалось поставить меню-кнопку: %s", exc)
 
+    async def set_commands(self) -> None:
+        """Список команд в меню «/» Telegram (иначе /models не видно)."""
+        commands = [
+            {"command": "start", "description": "Начать и помощь"},
+            {"command": "status", "description": "Состояние устройств и модели"},
+            {"command": "models", "description": "Выбрать модель ИИ"},
+            {"command": "model", "description": "Переключить модель: /model имя"},
+            {"command": "pending", "description": "Ожидающие подтверждения"},
+            {"command": "reset", "description": "Очистить контекст диалога"},
+            {"command": "panel", "description": "Открыть панель"},
+        ]
+        try:
+            await self.api("setMyCommands", {"commands": commands})
+            log.info("команды бота зарегистрированы: %d", len(commands))
+        except RuntimeError as exc:
+            log.warning("не удалось зарегистрировать команды: %s", exc)
+
     # ─────────────────────────── цикл опроса ───────────────────────────
 
     async def handle(self, update: dict) -> None:
@@ -410,6 +427,7 @@ class Telegram:
                         "добавьте свой chat_id в .env")
         if settings.telegram_webapp_url:
             await self.set_menu_button()
+        await self.set_commands()
         log.info("бот @%s запущен, ядро: %s", name, self.core)
 
         offset = 0

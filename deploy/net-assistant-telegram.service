@@ -1,0 +1,19 @@
+[Unit]
+Description=Net Assistant Telegram bot — пульт к ядру
+Documentation=file:///opt/net-assistant/docs/TELEGRAM.md
+After=network-online.target net-assistant-core.service
+Wants=net-assistant-core.service
+
+[Service]
+Type=simple
+User=assistant
+WorkingDirectory=/opt/net-assistant
+EnvironmentFile=/opt/net-assistant/.env
+ExecStart=/opt/net-assistant/.venv/bin/python -m core.telegram_bot
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

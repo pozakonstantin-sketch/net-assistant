@@ -61,6 +61,8 @@ chown -R "$SERVICE_USER":"$SERVICE_USER" "$INSTALL_DIR"
 
 echo "== systemd =="
 install -m 644 "$INSTALL_DIR/deploy/net-assistant-core.service" /etc/systemd/system/
+install -m 644 "$INSTALL_DIR/deploy/net-assistant-router.service" /etc/systemd/system/
+install -m 644 "$INSTALL_DIR/deploy/net-assistant-telegram.service" /etc/systemd/system/
 install -m 644 "$INSTALL_DIR/deploy/net-assistant-fake@.service" /etc/systemd/system/
 install -m 644 "$INSTALL_DIR/deploy/tailscale-watchdog.service" /etc/systemd/system/
 install -m 644 "$INSTALL_DIR/deploy/tailscale-watchdog.timer" /etc/systemd/system/
@@ -71,6 +73,13 @@ systemctl enable --now net-assistant-core.service
 for agent in $FAKE_AGENTS; do
     systemctl enable --now "net-assistant-fake@${agent}.service"
 done
+
+echo "== Telegram-бот =="
+if grep -q '^TELEGRAM_BOT_TOKEN=.\+' "$INSTALL_DIR/.env"; then
+    systemctl enable --now net-assistant-telegram.service
+else
+    echo "TELEGRAM_BOT_TOKEN не задан — бот не включён (впишите токен в .env)"
+fi
 
 echo "== Сторож tailscaled =="
 if command -v tailscale >/dev/null 2>&1; then

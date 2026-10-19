@@ -71,5 +71,12 @@ class Settings:
     command_timeout: float = float(os.getenv("COMMAND_TIMEOUT", "30"))
     audit_path: Path = DATA_DIR / "audit.jsonl"
 
+    # Telegram-бот (long polling, входящие порты не нужны)
+    telegram_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    telegram_chats: tuple[str, ...] = tuple(_csv("TELEGRAM_ALLOWED_CHAT_IDS"))
+    telegram_core_url: str = os.getenv(
+        "TELEGRAM_CORE_URL", f"http://127.0.0.1:{os.getenv('CORE_PORT', '8787')}"
+    ).rstrip("/")
+
 
 settings = Settings()

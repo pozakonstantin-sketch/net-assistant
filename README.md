@@ -76,6 +76,7 @@ core/                 ядро
   protocol.py         формат сообщений + строгая проверка аргументов
   llm.py              планировщик (function calling) и подтверждения
   planner.py          планировщик на бесплатных моделях OpenCode (CLI)
+  telegram_bot.py     Telegram-бот (пульт: текст, голос, подтверждения)
   audit.py            журнал всех действий
 agents/
   common.py           переподключение, heartbeat, TTL, изоляция ошибок
@@ -101,6 +102,7 @@ tools/
 docs/VM_SETUP.md      лаборатория в виртуальной машине
 docs/PHONE_SETUP.md   телефон: Termux-агент и дашборд как приложение
 docs/OPENCODE_PLANNER.md  бесплатные модели OpenCode как планировщик
+docs/TELEGRAM.md      бот: пульт к ядру из Telegram
 ```
 
 ## Быстрый старт (Windows, локально)
@@ -143,6 +145,27 @@ $env:FAKE_KIND='android';.\.venv\Scripts\python -m agents.fake_agent
 
 Дашборд: откройте **http://127.0.0.1:8787**, вставьте токен из `.env` — увидите
 устройства, чат, подтверждения, журнал и кнопку микрофона.
+
+## Telegram-бот
+
+Управлять ассистентом можно из Telegram — бот живёт в ВМ рядом с ядром,
+работает через long polling (входящие порты не нужны) и умеет текстом,
+голосом, кнопками подтверждения и скриншотами:
+
+```
+Telegram → api.telegram.org → ВМ: core.telegram_bot → ядро → ПК / телефон / роутер
+```
+
+```bash
+# 1. @BotFather → /newbot → токен
+# 2. в .env на ВМ:
+TELEGRAM_BOT_TOKEN=123456789:AAE...
+TELEGRAM_ALLOWED_CHAT_IDS=          # пусто → бот не выполняет команды, только подскажет chat_id
+# 3. запуск
+sudo systemctl enable --now net-assistant-telegram
+```
+
+Подробно: [`docs/TELEGRAM.md`](docs/TELEGRAM.md).
 
 Автозапуск агента ПК при входе (чтобы не держать терминал):
 

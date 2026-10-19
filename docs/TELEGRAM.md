@@ -85,18 +85,39 @@ Telegram  ──►  api.telegram.org  ──►  ВМ: core.telegram_bot  ─�
 
 Тот же дашборд можно открыть прямо в Telegram: устройства, чат, подтверждения,
 журнал. Telegram требует **HTTPS**, поэтому панель публикуется через Tailscale
-(сертификат Let's Encrypt выдаётся автоматически):
+Serve — сертификат Let's Encrypt выдаётся автоматически.
 
-```bash
-# один раз в админке Tailscale включить Serve/HTTPS (ссылка появится в выводе)
-sudo tailscale serve --bg --https=443 http://127.0.0.1:8787
+### Где запускать Serve
+
+Serve удобно ставить на **узле со стабильным Tailscale**. В этом проекте
+`tailscaled` внутри ВМ периодически теряет управляющее соединение (сеть рвёт
+долгие TCP-сессии), а выпуск сертификата идёт через него — поэтому Serve
+запускается на ПК и проксирует на ядро по локальной сети:
+
+```
+Telegram → https://pc.тейлнет.ts.net → http://192.168.1.160:8787 (ядро в ВМ)
+```
+
+Нужны две галочки в админке Tailscale (один раз на весь tailnet):
+
+1. **Serve** — `https://login.tailscale.com/f/serve?node=<узел>`
+2. **HTTPS Certificates** — `https://login.tailscale.com/admin/dns`
+
+```powershell
+# на ПК (Windows):
+tailscale serve --bg --yes --https=443 http://192.168.1.160:8787
 tailscale serve status
 ```
 
-Адрес для `.env` — DNS-имя машины:
+```bash
+# или на ВМ, если её tailscaled стабилен:
+sudo tailscale serve --bg --https=443 http://127.0.0.1:8787
+```
+
+Адрес для `.env` — DNS-имя того узла, где запущен Serve:
 
 ```env
-TELEGRAM_WEBAPP_URL=https://assistant-hub.taile4385b.ts.net
+TELEGRAM_WEBAPP_URL=https://desktop-isuob1d.taile4385b.ts.net
 ```
 
 После перезапуска бот сам ставит кнопку **«Панель»** у поля ввода
@@ -115,11 +136,16 @@ TELEGRAM_WEBAPP_URL=https://assistant-hub.taile4385b.ts.net
 |---|---|
 | подпись `hash` совпадает с HMAC на токене бота | 401 «подпись не совпадает» |
 | `auth_date` не старше суток | 401 «данные устарели» |
-| пользователь в `TELEGRAM_ALLOWED_CHAT_IDS` | 401 «не в списке разрешённых» |
+| `TELEGRAM_ALLOWED_CHAT_IDS` задан | 401 «вход запрещён» (fail closed) |
+| пользователь в списке разрешённых | 401 «не в списке разрешённых» |
+
+> **Важно:** если `TELEGRAM_ALLOWED_CHAT_IDS` пуст, вход через панель закрыт
+> полностью — так же, как и у бота. Список пуст → ничего не выполняется.
 
 > Панель доступна только устройствам в вашем tailnet. Если нужен доступ из
 > любой сети — есть `tailscale funnel`, но тогда дашборд станет публичным
-> в интернете; так делать не стоит.
+> в интернете. Так делать не стоит, пока `/shots` (скриншоты) отдаётся без
+> авторизации.
 
 ## Обслуживание
 

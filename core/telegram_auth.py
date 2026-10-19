@@ -70,8 +70,12 @@ def validate_init_data(init_data: str, max_age: int = MAX_AGE) -> dict:
             raise AuthError("не удалось разобрать user") from exc
 
     allowed = {item.strip() for item in settings.telegram_chats if item.strip()}
+    if not allowed:
+        # закрываемся по умолчанию: пустой список = доступ не настроен
+        raise AuthError("TELEGRAM_ALLOWED_CHAT_IDS не задан — вход через "
+                        "мини-приложение запрещён")
     user_id = str(user.get("id", ""))
-    if allowed and user_id not in allowed:
+    if user_id not in allowed:
         raise AuthError(f"пользователь {user_id} не в списке разрешённых")
 
     log.info("мини-приложение: вошёл %s %s (id %s)",

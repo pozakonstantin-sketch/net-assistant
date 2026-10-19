@@ -1,14 +1,22 @@
 #!/usr/bin/env python3
 """Сторож tailscaled для ВМ-ядра.
 
-Домашняя сеть рвёт «простаивающие» TCP-соединения примерно за 3 минуты. Из-за
-этого tailscaled теряет управляющую сессию с координатором
-(controlplane.tailscale.com), перестаёт получать network map и узел ВМ
+Домашняя сеть рвёт «простаивающие» TCP-соединения, из-за чего tailscaled теряет
+управляющую сессию с координатором (controlplane.tailscale.com) и узел ВМ
 показывается в tailnet как offline — телефон не может достучаться до ядра.
 
-Скрипт проверяет состояние Tailscale и, если связь потеряна, перезапускает
-tailscaled. Запускается systemd-таймером раз в минуту (см.
-deploy/tailscale-watchdog.timer). Работает как root, внешних зависимостей нет.
+Скрипт проверяет состояние Tailscale и при **устойчивой** потере связи
+перезапускает tailscaled. Запускается systemd-таймером раз в минуту
+(см. deploy/tailscale-watchdog.timer). Работает как root, без зависимостей.
+
+Важные правила (чтобы не навредить):
+
+* сбой должен подтвердиться дважды подряд (``CONFIRM_SECONDS``), иначе
+  кратковременное «offline» в момент старта вызывало бы лавину перезапусков;
+* пока выпускается TLS-сертификат (``tls-cert-pending``), перезапуск запрещён:
+  ACME использует dns-01 и обрывается вместе с процессом — сертификат так и не
+  выпускается;
+* между перезапусками выдерживается ``COOLDOWN``.
 """
 
 from __future__ import annotations
@@ -24,13 +32,20 @@ TAILSCALE = shutil.which("tailscale") or "/usr/bin/tailscale"
 SYSTEMCTL = shutil.which("systemctl") or "/bin/systemctl"
 STATE = "/run/tailscale-watchdog.state"
 LOG = "/var/log/tailscale-watchdog.log"
-COOLDOWN = 120  # не перезапускать чаще, чем раз в 2 минуты
+COOLDOWN = 120          # не перезапускать чаще, чем раз в 2 минуты
+CONFIRM_SECONDS = 90    # сколько сбой должен держаться, чтобы считаться настоящим
 TAILSCALE_TIMEOUT = 20
 
 # Тексты health-check, которые означают потерю связи с координатором.
 STALE_MARKERS = (
     "hasn't received a network map",
     "Unable to connect to the Tailscale coordination server",
+)
+
+# Если идёт выпуск сертификата — не мешать.
+CERT_MARKERS = (
+    "Fetching TLS certificate",
+    "tls-cert-pending",
 )
 
 
@@ -45,13 +60,11 @@ def log(message: str) -> None:
 
 
 def check() -> tuple[str, str]:
-    """Возвращает (вердикт, подробности). Вердикт: ok | self-offline | stale-map | daemon-down."""
+    """Вердикт: ok | self-offline | stale-map | daemon-down."""
     try:
         proc = subprocess.run(
             [TAILSCALE, "status", "--json"],
-            capture_output=True,
-            text=True,
-            timeout=TAILSCALE_TIMEOUT,
+            capture_output=True, text=True, timeout=TAILSCALE_TIMEOUT,
         )
     except Exception as exc:  # noqa: BLE001 — сторож не должен падать
         return "daemon-down", f"вызов tailscale не удался: {exc}"
@@ -77,12 +90,27 @@ def check() -> tuple[str, str]:
     return "ok", health
 
 
-def read_last_restart() -> float:
+def read_state() -> dict:
     try:
         with open(STATE, encoding="utf-8") as fh:
-            return float(fh.read().strip() or 0)
+            return json.loads(fh.read() or "{}")
     except (OSError, ValueError):
-        return 0.0
+        return {}
+
+
+def write_state(**values) -> None:
+    try:
+        with open(STATE, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(values))
+    except OSError:
+        pass
+
+
+def clear_state() -> None:
+    try:
+        os.remove(STATE)
+    except FileNotFoundError:
+        pass
 
 
 def main() -> int:
@@ -92,35 +120,41 @@ def main() -> int:
     verdict, detail = check()
 
     if verdict == "ok":
-        try:
-            os.remove(STATE)
-        except FileNotFoundError:
-            pass
+        clear_state()
+        return 0
+
+    if any(marker in detail for marker in CERT_MARKERS):
+        log(f"{verdict}: {detail} — выпускается сертификат, не трогаю")
         return 0
 
     now = time.time()
-    last = read_last_restart()
+    state = read_state()
+    first = float(state.get("first") or 0)
+    last = float(state.get("last_restart") or 0)
+
+    if not first:
+        write_state(first=now, last_restart=last)
+        log(f"{verdict}: {detail} — сбой замечен, жду {CONFIRM_SECONDS} с")
+        return 0
+
+    held = now - first
+    if held < CONFIRM_SECONDS:
+        log(f"{verdict}: {detail} — держится {int(held)} с, пока не трогаю")
+        return 0
+
     waited = now - last
     if waited < COOLDOWN:
         log(f"{verdict}: {detail} — перезапуск отложен ({int(COOLDOWN - waited)} с)")
         return 0
 
-    log(f"{verdict}: {detail} — перезапускаю tailscaled")
-    result = subprocess.run(
-        [SYSTEMCTL, "restart", "tailscaled"],
-        capture_output=True,
-        text=True,
-    )
+    log(f"{verdict}: {detail} — сбой держится {int(held)} с, перезапускаю tailscaled")
+    result = subprocess.run([SYSTEMCTL, "restart", "tailscaled"],
+                            capture_output=True, text=True)
     if result.returncode != 0:
         log(f"ОШИБКА перезапуска (код {result.returncode}): {(result.stderr or '').strip()}")
         return 1
 
-    try:
-        with open(STATE, "w", encoding="utf-8") as fh:
-            fh.write(str(now))
-    except OSError:
-        pass
-
+    write_state(first=0, last_restart=now)
     time.sleep(8)
     after, after_detail = check()
     log(f"после перезапуска: {after}" + (f" ({after_detail})" if after != "ok" else ""))

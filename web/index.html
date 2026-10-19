@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0d1117">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="manifest" href="/static/manifest.webmanifest">
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/static/icon-192.png">
+  <title>Net Assistant</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <h1>Net&nbsp;Assistant</h1>
+    <div id="status" class="status">подключение…</div>
+    <div class="spacer"></div>
+    <button id="change-token" class="ghost">Токен</button>
+  </header>
+
+  <div id="login" class="login hidden">
+    <div class="card">
+      <h2>Токен доступа</h2>
+      <p class="muted">Значение <code>ASSISTANT_TOKEN</code> из файла <code>.env</code></p>
+      <input id="token" type="password" placeholder="вставьте токен" autocomplete="off">
+      <button id="save-token">Подключиться</button>
+      <div id="login-error" class="error"></div>
+    </div>
+  </div>
+
+  <main id="app" class="hidden">
+    <section class="panel devices">
+      <h2>Устройства <span id="device-count" class="badge">0</span></h2>
+      <div id="devices" class="device-list"></div>
+    </section>
+
+    <section class="panel chat">
+      <h2>Диалог
+        <button id="new-chat" class="ghost small" title="Очистить контекст">новый</button>
+      </h2>
+      <div id="messages" class="messages"></div>
+      <div class="composer">
+        <button id="mic" class="mic" title="Говорить (распознавание речи)">🎤</button>
+        <textarea id="message" rows="2" placeholder="Например: сделай скриншот и покажи, что на экране"></textarea>
+        <button id="send">→</button>
+      </div>
+      <label class="muted small"><input type="checkbox" id="voice-reply"> озвучивать ответы</label>
+    </section>
+
+    <section class="panel pending">
+      <h2>Подтверждения</h2>
+      <div id="pending"><p class="muted">нет ожидающих действий</p></div>
+    </section>
+
+    <section class="panel command">
+      <h2>Прямая команда</h2>
+      <div class="row">
+        <select id="cmd-device"></select>
+        <select id="cmd-action"></select>
+      </div>
+      <textarea id="cmd-args" rows="3" spellcheck="false">{}</textarea>
+      <button id="cmd-run">Выполнить</button>
+      <div id="cmd-result" class="result muted"></div>
+    </section>
+
+    <section class="panel audit">
+      <h2>Журнал</h2>
+      <div id="audit" class="audit-list"></div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

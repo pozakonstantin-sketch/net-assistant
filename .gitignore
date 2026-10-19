@@ -1,0 +1,33 @@
+# секреты
+.env
+.env.*
+!.env.example
+
+# данные ядра и агентов
+data/
+*.jsonl
+shots/
+*.log
+agent.log
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# инструменты, которые не нужны в репозитории
+tools/apk/
+tools/platform-tools/
+*.apk
+*.zip
+
+# windows
+Thumbs.db
+desktop.ini
+
+# редакторы
+.vscode/
+.idea/
+*.swp

@@ -1,0 +1,11 @@
+[Unit]
+Description=Сторож tailscaled (net-assistant): перезапуск при потере связи с координатором
+Documentation=file:///opt/net-assistant/docs/VM_SETUP.md
+After=tailscaled.service network-online.target
+Wants=network-online.target
+ConditionPathExists=/usr/local/bin/tailscale_watchdog.py
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/bin/tailscale_watchdog.py
+Nice=10

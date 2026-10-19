@@ -1,0 +1,4 @@
+# Минимальные зависимости для агента в Termux (Android).
+# Ядро (FastAPI и прочее) на телефоне не нужно.
+websockets>=12.0
+python-dotenv>=1.0

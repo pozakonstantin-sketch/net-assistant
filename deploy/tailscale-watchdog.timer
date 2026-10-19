@@ -1,0 +1,11 @@
+[Unit]
+Description=Запуск сторожа tailscaled раз в минуту (net-assistant)
+
+[Timer]
+OnBootSec=120
+OnUnitActiveSec=60
+AccuracySec=5s
+Unit=tailscale-watchdog.service
+
+[Install]
+WantedBy=timers.target

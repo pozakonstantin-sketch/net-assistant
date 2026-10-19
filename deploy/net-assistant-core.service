@@ -1,0 +1,18 @@
+[Unit]
+Description=Net Assistant Core (хаб ассистента)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=assistant
+WorkingDirectory=/opt/net-assistant
+EnvironmentFile=/opt/net-assistant/.env
+ExecStart=/opt/net-assistant/.venv/bin/python -m core.main
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

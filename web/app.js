@@ -118,7 +118,11 @@ async function api(path, options = {}) {
 
 function initTelegram() {
   if (!tg) return;
-  if (tg.initData) document.body.classList.add('tg-mode');
+  if (tg.initData) {
+    document.body.classList.add('tg-mode');
+    const line = $('#version-line');
+    if (line) line.textContent = 'Версия 2.0 · панель в Telegram';
+  }
   try { tg.ready(); tg.expand(); } catch { /* noop */ }
   try { tg.disableVerticalSwipes && tg.disableVerticalSwipes(); } catch { /* noop */ }
   try { tg.setHeaderColor('#111318'); tg.setBackgroundColor('#111318'); } catch { /* noop */ }

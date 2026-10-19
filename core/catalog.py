@@ -202,7 +202,9 @@ CATALOG: dict[str, dict[str, Any]] = {
         "args": {},
     },
     "app.open": {
-        "desc": "Запустить приложение по имени пакета, например org.telegram.messenger.",
+        "desc": ("Запустить приложение. Указывайте имя пакета (org.telegram.messenger); "
+                 "на телефоне через adb можно и русское название («Часы», «Настройки») — "
+                 "пакет подберётся автоматически."),
         "devices": [ANDROID, ANDROID_ADB],
         "args": {"package": {"type": "str", "required": True, "max_len": 128}},
     },
@@ -281,10 +283,14 @@ CATALOG: dict[str, dict[str, Any]] = {
         },
     },
     "screen.text": {
-        "desc": ("Ввести текст в активное поле на телефоне. Только латиница и цифры: "
-                 "Android не принимает кириллицу через adb."),
+        "desc": ("Ввести текст в активное поле на телефоне (кириллица и латиница — через "
+                 "ADBKeyboard). clear=true — сначала очистить поле."),
         "devices": [ANDROID_ADB],
-        "args": {"text": {"type": "str", "required": True, "max_len": 300}},
+        "args": {
+            "text": {"type": "str", "required": True, "max_len": 300},
+            "clear": {"type": "bool", "default": False,
+                      "description": "очистить поле перед вводом"},
+        },
     },
     "screen.key": {
         "desc": ("Нажать кнопку телефона: back, home, recents, enter, wakeup (разбудить "

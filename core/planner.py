@@ -52,7 +52,8 @@ SYSTEM_PROMPT = """Ты — планировщик домашнего ассис
 5. Аргументы указывай строго по схеме действия, лишние поля не добавляй.
 6. Для безопасной диагностики (версии, обновления, процессы, диск, сеть, список файлов) используй shell.run — он не требует подтверждения. exec.run — только когда нужно изменить систему или без него действительно не обойтись.
 7. Действия с пометкой ОПАСНО ядро дополнительно подтвердит у пользователя.
-8. Экран телефона: устройство с типом android-adb управляет экраном Honor по adb (агент работает в ВМ). Чтобы понять, что на экране, вызови screen.ui — он вернёт тексты и координаты; нажимай screen.tap с полем text; прокрутка — screen.swipe direction=up. Экран должен быть разблокирован, кириллицу вводить нельзя."""
+8. Экран телефона: устройство с типом android-adb управляет экраном Honor по adb (агент работает в ВМ). Чтобы понять, что на экране, вызови screen.ui — он вернёт тексты и координаты; нажимай screen.tap с полем text; прокрутка — screen.swipe direction=up; ввод — screen.text (латиницей). Приложения открывай app.open и называй по-русски («Часы», «Настройки»). Экран должен быть разблокирован, кириллицу вводить нельзя. Если в поле поиска остался старый текст, сначала тапни «Удалить».
+9. Инструментов у тебя нет: не читай файлы, не «смотри» изображения и не запускай команды. Все данные — только из результатов действий. Снимок показывай пользователю ссылкой из результата; чтобы понять, что на экране, вызывай screen.ui."""
 
 
 # ─────────────────────────── доступность CLI ───────────────────────────
@@ -141,7 +142,7 @@ def _strip_ansi(text: str) -> str:
     return ANSI_RE.sub("", text)
 
 
-async def _ask_opencode(prompt: str) -> str:
+async def _ask_opencode(prompt: str, attempt: int = 0) -> str:
     binary = binary_path()
     if binary is None:
         raise RuntimeError(
@@ -149,13 +150,25 @@ async def _ask_opencode(prompt: str) -> str:
             "curl -fsSL https://opencode.ai/install | bash"
         )
 
+    text = prompt
+    if attempt:
+        # Бесплатную модель иногда тянет к инструментам (например, «посмотреть»
+        # снимок экрана). Инструментов у неё нет, поэтому повторяем запрос с
+        # явным запретом — иначе CLI обрывает ответ на запросе прав.
+        text = (
+            prompt
+            + "\n\nВАЖНО: инструментов у тебя нет — не вызывай Read, Bash, Glob, Edit "
+            "и прочее. Ответь только текстом по-русски (или одним JSON-объектом, "
+            "если это план действий)."
+        )
+
     model = models.current()
     command = [binary, "run", "-m", model]
     if settings.opencode_agent:
         command += ["--agent", settings.opencode_agent]
-    command.append(prompt)
+    command.append(text)
 
-    log.info("openCode: запрос к %s (%d символов)", model, len(prompt))
+    log.info("openCode: запрос к %s (%d символов)", model, len(text))
     async with _run_lock:
         process = await asyncio.create_subprocess_exec(
             *command,
@@ -181,6 +194,9 @@ async def _ask_opencode(prompt: str) -> str:
     answer = _strip_ansi(stdout.decode("utf-8", "replace")).strip()
     if not answer:
         detail = _strip_ansi(stderr.decode("utf-8", "replace")).strip()[-500:]
+        if attempt == 0:
+            log.warning("OpenCode вернул пустой ответ, повтор запроса: %s", detail[-200:])
+            return await _ask_opencode(prompt, attempt=1)
         raise RuntimeError(
             "OpenCode вернул пустой ответ" + (f": {detail}" if detail else "")
         )
@@ -231,8 +247,16 @@ def _parse_plan(answer: str) -> dict | None:
 
 
 def _trim(value: Any) -> Any:
-    if isinstance(value, dict) and "url" in value:
-        return value
+    """Обрезать длинные результаты и убрать локальные пути к файлам.
+
+    Путь к снимку («file») модели не нужен: она либо показывала бы его в ответе,
+    либо тянулась бы за инструментом чтения файлов, которого у неё нет.
+    """
+    if isinstance(value, dict):
+        clean = {key: item for key, item in value.items() if key != "file"}
+        if "url" in clean:
+            return clean
+        value = clean
     dump = json.dumps(value, ensure_ascii=False, default=str)
     if len(dump) <= OBSERVATION_LIMIT:
         return value
@@ -329,9 +353,32 @@ async def run_turn(user_text: str, history: list[dict]) -> dict:
         if not reply:
             reply = _fallback_reply(observations)
 
-    final = reply or "Готово."
+    # Шаги закончились, а модель всё ещё выполняла действия: её «открываю…»
+    # — это обещание, а не ответ. Просим итог отдельным запросом без действий.
+    try:
+        final = await _final_answer(prefix, observations)
+    except RuntimeError as exc:
+        log.warning("итоговый ответ не получен: %s", exc)
+        final = ""
+    final = final or reply or _fallback_reply(observations) or "Готово."
     _remember(history, user_text, final)
     return {"reply": final, "executed": executed, "pending": created}
+
+
+async def _final_answer(prefix: str, observations: list[dict]) -> str:
+    """Последний шаг: действия запрещены, нужен только вывод по результатам."""
+    prompt = (
+        prefix
+        + "\nРезультаты уже выполненных действий (JSON):\n"
+        + json.dumps(observations, ensure_ascii=False)[:6000]
+        + "\n\nДействия больше не выполняй (actions должен быть пустым списком). "
+        "Ответь пользователю коротко по-русски: что получилось, с конкретными данными из результатов."
+    )
+    answer = await _ask_opencode(prompt)
+    plan = _parse_plan(answer)
+    if plan is None:
+        return answer.strip()[:ANSWER_LIMIT]
+    return str(plan.get("reply") or "").strip()
 
 
 def _fallback_reply(observations: list[dict]) -> str:

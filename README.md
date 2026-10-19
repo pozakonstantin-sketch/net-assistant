@@ -70,8 +70,10 @@
 - **Экран:** Android не разрешает приложению нажимать за пользователя, поэтому
   экран ведёт отдельный агент **в ВМ** — `agents/phone_screen_agent.py` — через
   `adb` по сети (TCP 5555). ПК в этом не участвует. Действия: `screen.ui`,
-  `screen.shot`, `screen.tap`, `screen.swipe`, `screen.text`, `screen.key`.
-  Настройка и ограничения — `docs/PHONE_SETUP.md`.
+  `screen.shot`, `screen.tap`, `screen.swipe`, `screen.text` (кириллица через
+  ADBKeyboard, `clear=true` очищает поле), `screen.key`, `app.open` (пакет или
+  русское название — «Часы», «Настройки»). Телефон ищется и по mDNS, если IP
+  сменился. Настройка и ограничения — `docs/PHONE_SETUP.md`.
 
 Полная инструкция — `docs/PHONE_SETUP.md`.
 

@@ -16,7 +16,7 @@
 
 Ограничения (честно сообщаются пользователю):
     * экран должен быть разблокирован — PIN ассистент ввести не может;
-    * ввод кириллицы через adb невозможен (input text умеет только латиницу).
+    * кириллица вводится через ADBKeyboard (ставится отдельно, см. ниже).
 """
 
 from __future__ import annotations
@@ -86,6 +86,26 @@ class Phone:
                 states[parts[0]] = parts[1]
         return states
 
+    def _discover(self) -> list[str]:
+        """Найти телефон через mDNS.
+
+        Когда на телефоне включена отладка по сети (или беспроводная отладка),
+        adbd объявляет сервис `_adb._tcp` / `_adb-tls-connect._tcp` — так телефон
+        находится, даже если его IP сменился.
+        """
+        try:
+            result = self._call(["mdns", "services"], timeout=10)
+        except subprocess.TimeoutExpired:
+            return []
+        found: list[str] = []
+        for line in result.stdout.decode("utf-8", "replace").splitlines():
+            if "_adb._tcp" not in line and "_adb-tls-connect._tcp" not in line:
+                continue
+            endpoint = line.split()[-1]
+            if ":" in endpoint and endpoint not in found:
+                found.append(endpoint)
+        return found
+
     def connect(self) -> str:
         """Вернуть адрес, по которому телефон доступен; при необходимости подключиться."""
         with self._lock:
@@ -116,6 +136,22 @@ class Phone:
                     self.target = target
                     log.info("телефон подключён по adb: %s", target)
                     return target
+
+            # Последняя попытка — найти телефон через mDNS (IP мог измениться).
+            discovered = [item for item in self._discover() if item not in TARGETS]
+            for target in discovered:
+                try:
+                    self._call(["connect", target], timeout=CONNECT_TIMEOUT)
+                except subprocess.TimeoutExpired:
+                    log.warning("adb connect %s: таймаут", target)
+            if discovered:
+                log.info("mDNS предложил адреса: %s", ", ".join(discovered))
+                states = self._states()
+                for target in discovered:
+                    if states.get(target) == "device":
+                        self.target = target
+                        log.info("телефон найден через mDNS: %s", target)
+                        return target
 
             detail = ", ".join(f"{t}={states.get(t, 'нет')}" for t in TARGETS)
             raise RuntimeError(
@@ -229,10 +265,38 @@ def find_element(needle: str, limit: int = 40) -> dict:
 # ───────────────────────────── команды ─────────────────────────────
 
 
+def _foreground() -> str:
+    """Текущее окно.
+
+    На Honor в выводе `dumpsys window` несколько блоков (по дисплеям), и первый
+    `mCurrentFocus` обычно `null` — поэтому берём последний непустой. Если
+    такого нет, спрашиваем активность у `dumpsys activity`.
+    """
+    text = phone.shell("dumpsys window 2>/dev/null | grep mCurrentFocus")
+    values = [
+        line.split("=", 1)[1].strip()
+        for line in text.splitlines()
+        if "=" in line
+    ]
+    values = [value for value in values if value and value.lower() != "null"]
+    if values:
+        return values[-1][:200]
+    text = phone.shell("dumpsys activity activities 2>/dev/null | grep -m1 topResumedActivity")
+    if "=" in text:
+        return text.split("=", 1)[1].strip()[:200]
+    return "неизвестно"
+
+
+def _package_of(window: str) -> str:
+    """Пакет из строки вида «Window{4249e2 u0 org.telegram.messenger/...}»."""
+    match = re.search(r"\s([A-Za-z0-9_.]+)/[A-Za-z0-9_.$]+", window)
+    return match.group(1) if match else ""
+
+
 def screen_info(_args: dict) -> dict:
     width, height = phone.screen_size()
     density = re.search(r"(\d+)", phone.shell("wm density"))
-    focus = phone.shell("dumpsys window 2>/dev/null | grep -m1 mCurrentFocus").strip()
+    focus = _foreground()
     wake = phone.shell("dumpsys power 2>/dev/null | grep -m1 mWakefulness=").strip()
     interactive = phone.shell("dumpsys power 2>/dev/null | grep -m1 mHoldingDisplaySuspendBlocker")
     return {
@@ -240,7 +304,8 @@ def screen_info(_args: dict) -> dict:
         "size": f"{width}x{height}",
         "density": density.group(1) if density else "",
         "screen": "включён" if "Awake" in wake else "выключен или в спящем режиме",
-        "foreground": focus.replace("mCurrentFocus=", "").strip()[:160] or "неизвестно",
+        "foreground": focus,
+        "package": _package_of(focus),
         "note": "если экран выключен — screen.key key=wakeup",
         "display_holder": interactive.strip()[:120],
     }
@@ -350,17 +415,56 @@ def screen_swipe(args: dict) -> dict:
                       "direction": direction}}
 
 
+ADB_IME = "com.android.adbkeyboard/.AdbIME"
+
+
+def _ime_ready() -> bool:
+    listing = phone.shell("ime list -s 2>/dev/null")
+    if "com.android.adbkeyboard" in listing:
+        return True
+    # После установки IME выключена — включаем один раз (adb-оболочке это можно).
+    phone.shell(f"ime enable {ADB_IME} 2>/dev/null")
+    return "com.android.adbkeyboard" in phone.shell("ime list -s 2>/dev/null")
+
+
+def _type_via_adb_keyboard(text: str, clear: bool) -> bool:
+    """Ввод через ADBKeyboard: понимает кириллицу — текст уходит в base64.
+
+    Клавиатуру включаем только на время ввода и возвращаем прежнюю: иначе
+    у владельца телефона пропадёт обычная клавиатура.
+    """
+    if not _ime_ready():
+        return False
+    saved = phone.shell("settings get secure default_input_method").strip()
+    phone.shell(f"ime enable {ADB_IME}")
+    phone.shell(f"ime set {ADB_IME}")
+    time.sleep(0.4)
+    try:
+        if clear:
+            phone.shell("am broadcast -a ADB_CLEAR_TEXT")
+        payload = base64.b64encode(text.encode("utf-8")).decode("ascii")
+        phone.shell(f"am broadcast -a ADB_INPUT_B64 --es msg {payload}")
+    finally:
+        if saved and "adbkeyboard" not in saved:
+            phone.shell(f"ime set {saved}")
+    time.sleep(0.3)
+    return True
+
+
 def screen_text(args: dict) -> dict:
     text = str(args["text"])
+    clear = bool(args.get("clear", False))
+    if _type_via_adb_keyboard(text, clear):
+        return {"entered": text, "method": "adbkeyboard", "cleared": clear}
     if not text.isascii():
         raise ValueError(
-            "Android не умеет вводить кириллицу через adb (input text работает только "
-            "с латиницей). Введите текст вручную или пользуйтесь латиницей"
+            "ADBKeyboard не установлен, а `input text` умеет только латиницу. "
+            "Поставьте ADBKeyboard (docs/PHONE_SETUP.md) или введите текст вручную"
         )
     quoted = shlex.quote(text.replace(" ", "%s"))
     phone.shell(f"input text {quoted}")
     time.sleep(0.4)
-    return {"entered": text}
+    return {"entered": text, "method": "input"}
 
 
 def screen_key(args: dict) -> dict:
@@ -373,22 +477,86 @@ def screen_key(args: dict) -> dict:
     return {"pressed": key, "keycode": code}
 
 
+RU_HINTS = {
+    "часы": "clock", "будильник": "clock", "секундомер": "clock", "таймер": "clock",
+    "камера": "camera", "фото": "camera|photos|gallery",
+    "настройки": "settings", "параметры": "settings",
+    "браузер": "browser|chrome", "интернет": "browser|chrome",
+    "календарь": "calendar", "галерея": "gallery|photos",
+    "музыка": "music|audio", "плеер": "music|audio",
+    "телефон": "dialer|contacts|phone", "контакты": "contacts",
+    "смс": "messaging|mms", "сообщения": "messaging|mms",
+    "телеграм": "telegram", "ютуб": "youtube", "погода": "weather",
+    "карты": "maps", "заметки": "notes", "почта": "mail|gmail",
+}
+
+
+def _packages() -> list[str]:
+    listing = phone.shell("pm list packages 2>/dev/null")
+    return [
+        line.split(":", 1)[1].strip()
+        for line in listing.splitlines()
+        if line.startswith("package:")
+    ]
+
+
+def _resolve_package(name: str) -> str | None:
+    """Пакет по имени или по русскому названию приложения («Часы» → ...deskclock).
+
+    Порядок поиска: точное имя пакета → последний сегмент совпадает с шаблоном
+    (settings → com.android.settings, а не com.android.settings.intelligence) →
+    пакет заканчивается на шаблон → вхождение (берём самый короткий).
+    """
+    value = name.strip()
+    if not value or " " in value:
+        return None
+    listing = _packages()
+    if value in listing:
+        return value
+
+    hint = RU_HINTS.get(value.lower())
+    patterns = (hint or value.lower()).split("|")
+    for pattern in patterns:
+        for package in listing:
+            if package.rsplit(".", 1)[-1] == pattern:
+                return package
+    for pattern in patterns:
+        for package in listing:
+            if package.endswith(f".{pattern}"):
+                return package
+    best: str | None = None
+    for pattern in patterns:
+        for package in listing:
+            if pattern in package.lower() and (best is None or len(package) < len(best)):
+                best = package
+        if best:
+            return best
+    return None
+
+
 def app_open(args: dict) -> dict:
-    package = str(args["package"]).strip()
+    wanted = str(args["package"]).strip()
+    package = _resolve_package(wanted) or wanted
     output = phone.shell(
         f"monkey -p {shlex.quote(package)} -c android.intent.category.LAUNCHER 1 2>&1 | tail -3",
         timeout=45,
     )
     if "No activities found" in output or "aborted" in output:
-        raise ValueError(f"не удалось запустить «{package}»: {output.strip()[:200]}")
+        raise ValueError(
+            f"не удалось запустить «{wanted}» (пакет {package}): {output.strip()[:200]}"
+        )
     time.sleep(1.5)
-    return {"launched": package, "output": output.strip()[:200]}
+    return {
+        "launched": package,
+        "requested": wanted,
+        "foreground": _foreground(),
+        "output": output.strip()[:200],
+    }
 
 
 def app_current(_args: dict) -> dict:
-    focus = phone.shell("dumpsys window 2>/dev/null | grep -m1 mCurrentFocus").strip()
-    value = focus.replace("mCurrentFocus=", "").strip()
-    package = value.split("/")[0].strip() if "/" in value else value
+    value = _foreground()
+    package = _package_of(value) or (value.split("/")[0].strip() if "/" in value else value)
     return {"package": package or "неизвестно", "window": value[:160]}
 
 

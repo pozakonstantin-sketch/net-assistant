@@ -100,6 +100,8 @@ tools/
   run_elevated.ps1    запуск скрипта с UAC и логом
   resize_lab_vm.ps1   память/процессоры ВМ (для планировщика нужно ≥4 ГБ)
 docs/VM_SETUP.md      лаборатория в виртуальной машине
+docs/ASTRA_VM.md      боевой хаб на Astra Linux SE: preseed, Tailscale, панель
+docs/PC_AGENT_MIN.md  минимум на ПК: только агент, без полного проекта
 docs/PHONE_SETUP.md   телефон: Termux-агент и дашборд как приложение
 docs/OPENCODE_PLANNER.md  бесплатные модели OpenCode как планировщик
 docs/TELEGRAM.md      бот: пульт к ядру из Telegram

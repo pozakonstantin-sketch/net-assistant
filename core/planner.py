@@ -24,7 +24,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from . import catalog
+from . import catalog, models
 from .audit import audit
 from .config import DATA_DIR, settings
 from .hub import CommandFailed, DeviceOffline, hub
@@ -147,12 +147,13 @@ async def _ask_opencode(prompt: str) -> str:
             "curl -fsSL https://opencode.ai/install | bash"
         )
 
-    command = [binary, "run", "-m", settings.opencode_model]
+    model = models.current()
+    command = [binary, "run", "-m", model]
     if settings.opencode_agent:
         command += ["--agent", settings.opencode_agent]
     command.append(prompt)
 
-    log.info("openCode: запрос к %s (%d символов)", settings.opencode_model, len(prompt))
+    log.info("openCode: запрос к %s (%d символов)", model, len(prompt))
     async with _run_lock:
         process = await asyncio.create_subprocess_exec(
             *command,

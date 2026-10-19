@@ -42,6 +42,7 @@ async function boot() {
   try {
     await refreshAll();
     state.planner = await fetchPlanner();
+    await loadModels();
     $('#login').classList.add('hidden');
     $('#app').classList.remove('hidden');
     setStatus(onlineStatus(), true);
@@ -88,9 +89,63 @@ async function fetchPlanner() {
   try {
     const health = await api('/health');
     if (!health.llm_configured) return 'ИИ не настроен';
-    return health.llm_backend === 'opencode' ? 'ИИ: OpenCode (бесплатно)' : `ИИ: ${health.llm_model || 'облако'}`;
+    if (health.llm_backend === 'opencode') {
+      const short = String(health.llm_model || '').split('/').pop();
+      return `ИИ: OpenCode · ${short}`;
+    }
+    return `ИИ: ${health.llm_model || 'облако'}`;
   } catch {
     return '';
+  }
+}
+
+/* ─────────────────────────── модель ИИ ─────────────────────────── */
+
+async function loadModels() {
+  const select = $('#model-select');
+  const hint = $('#model-hint');
+  if (!select) return;
+  try {
+    const data = await api('/models');
+    state.models = data;
+    select.innerHTML = '';
+    for (const model of data.models || []) {
+      const option = document.createElement('option');
+      option.value = model;
+      option.textContent = model.split('/').pop() + (model === data.current ? ' — текущая' : '');
+      select.appendChild(option);
+    }
+    if (!(data.models || []).length) {
+      const option = document.createElement('option');
+      option.value = data.current;
+      option.textContent = data.current;
+      select.appendChild(option);
+    }
+    select.value = data.current;
+    hint.textContent = data.custom
+      ? `выбрана вручную · по умолчанию: ${data.default}`
+      : `по умолчанию из .env: ${data.default}`;
+  } catch (error) {
+    hint.textContent = `список моделей недоступен: ${error.message}`;
+  }
+}
+
+async function applyModel() {
+  const button = $('#model-apply');
+  const model = $('#model-select').value;
+  if (!model) return;
+  button.disabled = true;
+  try {
+    const data = await api('/models', { method: 'POST', body: JSON.stringify({ model }) });
+    state.models = data;
+    await loadModels();
+    state.planner = await fetchPlanner();
+    setStatus(onlineStatus(), true);
+    $('#model-hint').textContent = `переключено на ${data.current}`;
+  } catch (error) {
+    $('#model-hint').textContent = `не удалось переключить: ${error.message}`;
+  } finally {
+    button.disabled = false;
   }
 }
 
@@ -450,6 +505,8 @@ $('#mic').onclick = toggleRecording;
 $('#cmd-device').onchange = fillActions;
 $('#cmd-action').onchange = updateArgsTemplate;
 $('#cmd-run').onclick = runCommand;
+$('#model-apply').onclick = applyModel;
+$('#model-select').onchange = () => { $('#model-hint').textContent = 'нажмите «Переключить», чтобы применить'; };
 $('#new-chat').onclick = async () => {
   try { await api('/session/default', { method: 'DELETE' }); } catch (_) { /* не критично */ }
   $('#messages').innerHTML = '';

@@ -20,7 +20,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Res
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import catalog, llm, voice
+from . import catalog, llm, models, voice
 from .audit import audit
 from .config import BASE_DIR, settings
 from .files import SHOTS_DIR
@@ -94,6 +94,10 @@ class TelegramAuthRequest(BaseModel):
     init_data: str = Field(min_length=1, max_length=8192)
 
 
+class ModelRequest(BaseModel):
+    model: str = Field(min_length=1, max_length=128)
+
+
 _sessions: dict[str, list[dict]] = {}
 
 
@@ -139,7 +143,7 @@ async def health() -> dict:
         "devices_online": len(hub.online_devices()),
         "stt_engine": voice.engine(),
         "llm_backend": backend,
-        "llm_model": settings.opencode_model if backend == "opencode" else settings.llm_model,
+        "llm_model": models.current() if backend == "opencode" else settings.llm_model,
         "llm_configured": backend == "opencode" or bool(settings.llm_api_key),
     }
 
@@ -285,6 +289,42 @@ async def audit_tail(limit: int = 50) -> dict:
 @app.get("/pending", dependencies=[Depends(require_token)])
 async def pending() -> dict:
     return {"pending": llm.confirmations.list()}
+
+
+# ─────────────────────────── выбор модели ИИ ───────────────────────────
+
+
+@app.get("/models", dependencies=[Depends(require_token)])
+async def models_list(refresh: bool = False) -> dict:
+    """Список доступных моделей планировщика и текущая выбранная.
+
+    refresh=true заставляет заново опросить CLI opencode (может занять до минуты).
+    """
+    info = models.info()
+    if refresh:
+        info["models"] = models.available(refresh=True)
+    return info
+
+
+@app.post("/models", dependencies=[Depends(require_token)])
+async def models_switch(request: ModelRequest) -> dict:
+    """Переключить модель планировщика на ходу (без перезапуска ядра)."""
+    try:
+        chosen = models.set_current(request.model)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    audit.write(event="model_switch", model=chosen)
+    return {"status": "ok", **models.info()}
+
+
+@app.delete("/models", dependencies=[Depends(require_token)])
+async def models_reset() -> dict:
+    """Вернуться к модели из .env (OPENCODE_MODEL)."""
+    models.reset()
+    audit.write(event="model_reset")
+    return {"status": "ok", **models.info()}
 
 
 # ─────────────────────────── прямой вызов команды ───────────────────────────

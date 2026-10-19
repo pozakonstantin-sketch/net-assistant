@@ -42,6 +42,8 @@ HELP = """<b>Ассистент</b> — управление ПК, телефо�
 
 Команды:
 /status — ядро и список устройств
+/models — выбрать модель ИИ (список кнопками)
+/model <имя> — переключить модель сразу
 /pending — что ждёт подтверждения
 /panel — открыть панель (устройства, чат, журнал)
 /reset — очистить контекст диалога
@@ -172,6 +174,9 @@ class Telegram:
             await self.send(chat_id, HELP, keyboard=panel_row() or None)
         elif command == "status":
             await self.status(chat_id)
+        elif command in {"models", "model"}:
+            parts = text.split(None, 1)
+            await self.models(chat_id, parts[1].strip() if len(parts) > 1 else "")
         elif command == "pending":
             await self.pending(chat_id)
         elif command == "reset":
@@ -202,6 +207,39 @@ class Telegram:
                          f"{_esc(device.get('platform'))}, "
                          f"{len(device.get('available_actions', []))} команд")
         await self.send(chat_id, "\n".join(lines))
+
+    async def models(self, chat_id: int, argument: str = "") -> None:
+        """Показать список моделей ИИ или переключиться на указанную."""
+        if argument:
+            try:
+                data = await self.core_call("POST", "/models", {"model": argument})
+            except RuntimeError as exc:
+                await self.send(chat_id, f"⚠️ {_esc(exc)}")
+                return
+            await self.send(chat_id, f"🧠 Модель переключена: <b>{_esc(data.get('current'))}</b>")
+            return
+
+        try:
+            data = await self.core_call("GET", "/models")
+        except RuntimeError as exc:
+            await self.send(chat_id, f"⚠️ Ядро недоступно: {_esc(exc)}")
+            return
+
+        current = str(data.get("current") or "")
+        models = [str(item) for item in data.get("models") or []]
+        if not models:
+            await self.send(chat_id, f"🧠 Текущая модель: <b>{_esc(current)}</b>\n"
+                                     "Список получить не удалось — проверьте CLI opencode.")
+            return
+
+        lines = [f"🧠 Текущая модель: <b>{_esc(current)}</b>", "", "Нажмите, чтобы переключить:"]
+        rows: list[list[dict]] = []
+        for item in models:
+            mark = "✅ " if item == current else ""
+            lines.append(f"{mark}<code>{_esc(item)}</code>")
+            rows.append([{"text": f"{mark}{item.split('/', 1)[-1]}",
+                          "callback_data": f"model:{item}"}])
+        await self.send(chat_id, "\n".join(lines), keyboard=rows[:10])
 
     async def pending(self, chat_id: int) -> None:
         data = await self.core_call("GET", "/pending")
@@ -260,6 +298,10 @@ class Telegram:
                 if isinstance(result, dict) and str(result.get("url", "")).startswith("/shots/"):
                     await self.send_photo(chat_id,
                                           DATA_DIR / "shots" / Path(result["url"]).name)
+            elif data.startswith("model:"):
+                await self.api("answerCallbackQuery",
+                               {"callback_query_id": callback_id, "text": "Переключаю"})
+                await self.models(chat_id, data.split(":", 1)[1])
             elif data.startswith("cancel:"):
                 await self.core_call("POST", "/chat",
                                      {"message": "отмена", "session": f"{SESSION_PREFIX}{chat_id}"})

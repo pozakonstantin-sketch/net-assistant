@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import json
 import logging
 from pathlib import Path
 
@@ -80,6 +81,28 @@ def _allowed() -> set[str]:
 
 def _esc(value: object) -> str:
     return html.escape(str(value), quote=False)
+
+
+def _format_action(outcome: dict) -> str:
+    """Человекочитаемый итог подтверждённого действия — без сырого словаря."""
+    action = str(outcome.get("action") or "действие")
+    result = outcome.get("result")
+    lines = [f"✅ <b>{_esc(action)}</b>"]
+    if isinstance(result, dict):
+        code = result.get("exit_code")
+        stdout = str(result.get("stdout") or "").strip()
+        stderr = str(result.get("stderr") or "").strip()
+        if stdout:
+            lines.append(f"<pre>{_esc(stdout[:1500])}</pre>")
+        if stderr:
+            lines.append(f"⚠️ <pre>{_esc(stderr[:700])}</pre>")
+        if code not in (None, 0):
+            lines.append(f"код выхода: <code>{_esc(code)}</code>")
+        if not stdout and not stderr:
+            lines.append(f"<code>{_esc(json.dumps(result, ensure_ascii=False)[:800])}</code>")
+    elif result is not None:
+        lines.append(f"<code>{_esc(str(result)[:800])}</code>")
+    return "\n".join(lines)
 
 
 def _split(text: str) -> list[str]:
@@ -311,8 +334,7 @@ class Telegram:
                 outcome = await self.core_call("POST", f"/confirm/{token}")
                 await self.api("answerCallbackQuery",
                                {"callback_query_id": callback_id, "text": "Выполняю"})
-                await self.send(chat_id, f"✅ {_esc(outcome.get('action'))} — "
-                                         f"<code>{_esc(str(outcome.get('result'))[:800])}</code>")
+                await self.send(chat_id, _format_action(outcome))
                 result = outcome.get("result")
                 if isinstance(result, dict) and str(result.get("url", "")).startswith("/shots/"):
                     await self.send_photo(chat_id,

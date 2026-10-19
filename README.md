@@ -102,6 +102,7 @@ tools/
 docs/VM_SETUP.md      лаборатория в виртуальной машине
 docs/ASTRA_VM.md      боевой хаб на Astra Linux SE: preseed, Tailscale, панель
 docs/PC_AGENT_MIN.md  минимум на ПК: только агент, без полного проекта
+docs/COMMANDS.md      прямые команды по-русски: что написать и что произойдёт
 docs/PHONE_SETUP.md   телефон: Termux-агент и дашборд как приложение
 docs/OPENCODE_PLANNER.md  бесплатные модели OpenCode как планировщик
 docs/TELEGRAM.md      бот: пульт к ядру из Telegram

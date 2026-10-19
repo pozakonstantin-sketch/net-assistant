@@ -54,6 +54,10 @@ class Settings:
     require_confirm: bool = _bool("REQUIRE_CONFIRM", True)
     allowed_devices: tuple[str, ...] = tuple(_csv("ALLOWED_DEVICES"))
 
+    # Локальный адрес ядра (ws://192.168.x.y:8787). Попадает в установщик
+    # телефона как запасной канал, если VPN ещё не поднялся.
+    hub_lan_url: str = os.getenv("HUB_LAN_URL", "").strip().rstrip("/")
+
     # Режим доступа агентов:
     #   restricted — только белые списки команд и разрешённые каталоги (по умолчанию);
     #   full       — произвольные команды оболочки, запись/удаление файлов, процессы.

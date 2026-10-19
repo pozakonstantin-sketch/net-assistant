@@ -188,7 +188,7 @@ mkdir -p "$DIR"
 curl -fsSL "$BASE/android/bundle.tar.gz?token=$TOKEN" | tar -xzf - -C "$DIR"
 
 cat > "$DIR/.env" <<EOF
-CORE_URL=$WS
+CORE_URLS=__URLS__
 ASSISTANT_TOKEN=$TOKEN
 ANDROID_DEVICE_ID=phone
 ANDROID_DEVICE_NAME=Honor
@@ -206,7 +206,7 @@ echo "== Запуск и автозапуск =="
 # команды не находятся (FileNotFoundError: termux-battery-status).
 cat > "$HOME/start-agent.sh" <<'EOS'
 #!/data/data/com.termux/files/usr/bin/sh
-export HOME="${HOME:-/data/data/com.termux/files/home}"
+export HOME=/data/data/com.termux/files/home
 export PREFIX=/data/data/com.termux/files/usr
 export PATH="$PREFIX/bin:/system/bin:/system/xbin"
 export TMPDIR="$PREFIX/tmp"
@@ -252,6 +252,9 @@ async def android_install(request: Request, token: str = "") -> PlainTextRespons
         INSTALL_TEMPLATE
         .replace("__BASE__", base)
         .replace("__WS__", ws_base)
+        .replace("__URLS__", ",".join(
+            url for url in (ws_base, settings.hub_lan_url) if url
+        ))
         .replace("__TOKEN__", settings.token)
     )
     return PlainTextResponse(script, media_type="text/x-shellscript")

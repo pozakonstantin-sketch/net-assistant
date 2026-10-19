@@ -40,8 +40,16 @@ class AgentClient:
         self.name = name
         self.platform = platform
         self.handlers = handlers
-        base = (core_url or os.getenv("CORE_URL", "ws://127.0.0.1:8787")).rstrip("/")
-        self.url = f"{base}/ws/agent?token={token or settings.token}"
+        # CORE_URLS — адреса через запятую (например tailnet и локальная сеть).
+        # Агент по очереди пробует их: если после перезагрузки не поднялся VPN,
+        # устройство всё равно остаётся на связи через домашнюю сеть.
+        raw = core_url or os.getenv("CORE_URLS") or os.getenv("CORE_URL", "ws://127.0.0.1:8787")
+        bases = [item.strip().rstrip("/") for item in raw.split(",") if item.strip()]
+        secret = token or settings.token
+        self.urls = [f"{base}/ws/agent?token={secret}" for base in bases] or [
+            f"ws://127.0.0.1:8787/ws/agent?token={secret}"
+        ]
+        self.url = self.urls[0]
         self.max_size = max_message_mb * 1024 * 1024
         self._send_lock = asyncio.Lock()
         self._stop = asyncio.Event()
@@ -52,9 +60,9 @@ class AgentClient:
         async with self._send_lock:
             await websocket.send(json.dumps(payload, ensure_ascii=False))
 
-    async def _session(self) -> None:
+    async def _session(self, url: str) -> None:
         async with websockets.connect(
-            self.url,
+            url,
             ping_interval=20,
             ping_timeout=20,
             max_size=self.max_size,
@@ -89,18 +97,24 @@ class AgentClient:
     async def run_forever(self) -> None:
         backoff = 1.0
         while not self._stop.is_set():
-            try:
-                await self._session()
-                backoff = 1.0
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001 - сеть может отказать как угодно
-                log.warning("нет связи с ядром (%s: %s), повтор через %.0f с",
-                            type(exc).__name__, exc, backoff)
+            connected = False
+            for url in self.urls:
+                if self._stop.is_set():
+                    break
+                try:
+                    await self._session(url)
+                    connected = True
+                    backoff = 1.0
+                    break
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - сеть может отказать как угодно
+                    log.warning("нет связи с ядром (%s: %s) по %s",
+                                type(exc).__name__, exc, url.split("/ws/")[0])
             if self._stop.is_set():
                 break
-            await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, 30.0)
+            await asyncio.sleep(1.0 if connected else backoff)
+            backoff = 1.0 if connected else min(backoff * 2, 30.0)
 
     def stop(self) -> None:
         self._stop.set()

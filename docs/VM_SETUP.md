@@ -158,6 +158,12 @@ ROUTER_KIND=openwrt
 4. На агентах: `CORE_URL=ws://<tailscale-ip>:8787`.
 5. Порты в интернет не пробрасываются.
 
+> **Не передавайте `tailscale up --accept-routes`.** Домашний роутер анонсирует
+> подсеть `192.168.1.0/24` и exit-node; приняв маршруты, ВМ перекрывает свою
+> LAN-маршрутизацию и теряет SSH. Лечится из консоли Hyper-V:
+> `sudo tailscale set --accept-routes=false --exit-node=`. Подробнее про хаб на
+> Astra (установка из preseed, статический Tailscale, панель) — `docs/ASTRA_VM.md`.
+
 > **Узел показывается `offline`.** Домашняя сеть рвёт простаивающие TCP-соединения
 > примерно за 3 минуты, поэтому Tailscale периодически теряет long-poll к
 > координатору (симптом в логе: `control: map response long-poll timed out!`), и

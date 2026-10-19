@@ -22,8 +22,12 @@ if [[ ! -f "$INSTALL_DIR/requirements.txt" ]]; then
 fi
 
 echo "== Пакеты =="
-apt-get update -qq
-apt-get install -y -qq python3 python3-venv python3-pip
+# На Astra Linux SE сетевые репозитории могут быть недоступны (подключён только
+# установочный DVD), поэтому apt — «лучшее усилие»: отсутствие пакетов не фатально,
+# pip/virtualenv поднимаются вручную на следующем шаге.
+apt-get update -qq || echo "apt-get update: предупреждения (продолжаем)"
+apt-get install -y -qq python3 python3-venv python3-pip \
+    || echo "часть пакетов недоступна в текущих репозиториях — pip поднимем вручную"
 
 echo "== Пользователь $SERVICE_USER =="
 if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
@@ -41,8 +45,24 @@ chown -R "$SERVICE_USER":"$SERVICE_USER" "$INSTALL_DIR"
 chmod -R u+rwX,go+rX "$INSTALL_DIR"
 
 echo "== Окружение Python =="
+# Astra Linux SE (например, при подключённом только установочном DVD) не даёт
+# пакет python3-venv — модуль ensurepip отсутствует. Тогда pip поднимаем сами
+# через get-pip.py, а venv создаёт virtualenv (в нём pip уже встроен).
+if ! python3 -c "import ensurepip" 2>/dev/null; then
+    echo "ensurepip недоступен — поднимаю pip через get-pip.py"
+    curl -fsSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
+    python3 /tmp/get-pip.py --break-system-packages -q 2>/dev/null \
+        || python3 /tmp/get-pip.py -q
+    python3 -m pip install --break-system-packages -q virtualenv 2>/dev/null \
+        || python3 -m pip install -q virtualenv
+fi
+
 if [[ ! -d "$INSTALL_DIR/.venv" ]]; then
-    sudo -u "$SERVICE_USER" python3 -m venv "$INSTALL_DIR/.venv"
+    if python3 -c "import ensurepip" 2>/dev/null; then
+        sudo -u "$SERVICE_USER" python3 -m venv "$INSTALL_DIR/.venv"
+    else
+        sudo -u "$SERVICE_USER" python3 -m virtualenv -q "$INSTALL_DIR/.venv"
+    fi
 fi
 sudo -u "$SERVICE_USER" "$INSTALL_DIR/.venv/bin/pip" install -q --upgrade pip
 sudo -u "$SERVICE_USER" "$INSTALL_DIR/.venv/bin/pip" install -q -r "$INSTALL_DIR/requirements.txt"

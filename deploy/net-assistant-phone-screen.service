@@ -1,0 +1,20 @@
+[Unit]
+Description=Net Assistant — экран телефона через adb (агент в ВМ)
+Documentation=file:///opt/net-assistant/docs/PHONE_SETUP.md
+After=network-online.target net-assistant-core.service
+Wants=net-assistant-core.service
+
+[Service]
+Type=simple
+User=assistant
+# adb ищет ключ отладки в ~/.android — для системного сервиса HOME нужно задать явно
+Environment=HOME=/home/assistant
+WorkingDirectory=/opt/net-assistant
+EnvironmentFile=/opt/net-assistant/.env
+ExecStart=/opt/net-assistant/.venv/bin/python -m agents.phone_screen_agent
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

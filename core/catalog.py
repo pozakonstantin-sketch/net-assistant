@@ -17,6 +17,8 @@ from typing import Any
 
 PC = "pc-desktop"
 ANDROID = "android"
+# экран телефона через adb: агент работает в ВМ
+ANDROID_ADB = "android-adb"
 ROUTER = "router"
 
 CATALOG: dict[str, dict[str, Any]] = {
@@ -201,7 +203,7 @@ CATALOG: dict[str, dict[str, Any]] = {
     },
     "app.open": {
         "desc": "Запустить приложение по имени пакета, например org.telegram.messenger.",
-        "devices": [ANDROID],
+        "devices": [ANDROID, ANDROID_ADB],
         "args": {"package": {"type": "str", "required": True, "max_len": 128}},
     },
     "apps.list": {
@@ -226,8 +228,73 @@ CATALOG: dict[str, dict[str, Any]] = {
     },
     "app.current": {
         "desc": "Какое приложение сейчас на переднем плане (пакет и активность).",
-        "devices": [ANDROID],
+        "devices": [ANDROID, ANDROID_ADB],
         "args": {},
+    },
+
+    # ──────────────── Экран Android через adb (агент в ВМ) ────────────────
+    "screen.info": {
+        "desc": ("Состояние экрана телефона: размер, плотность, включён ли экран, "
+                 "какое приложение на переднем плане. Только чтение."),
+        "devices": [ANDROID_ADB],
+        "args": {},
+    },
+    "screen.shot": {
+        "desc": "Снимок экрана телефона (PNG). Ядро вернёт ссылку на файл.",
+        "devices": [ANDROID_ADB],
+        "args": {},
+    },
+    "screen.ui": {
+        "desc": ("Разбор текущего экрана телефона: видимые элементы с текстом и "
+                 "координатами. Вызывай перед нажатием, чтобы увидеть, что на экране."),
+        "devices": [ANDROID_ADB],
+        "args": {
+            "find": {"type": "str", "max_len": 128,
+                     "description": "показать только элементы, содержащие эту подстроку"},
+            "limit": {"type": "int", "default": 40, "min": 1, "max": 200},
+        },
+    },
+    "screen.tap": {
+        "desc": ("Нажать на экране телефона: по тексту элемента (text) — координаты "
+                 "найдутся сами, либо по координатам (x, y)."),
+        "devices": [ANDROID_ADB],
+        "args": {
+            "x": {"type": "int", "min": 0, "description": "координата по горизонтали"},
+            "y": {"type": "int", "min": 0, "description": "координата по вертикали"},
+            "text": {"type": "str", "max_len": 128,
+                     "description": "текст элемента на экране (надёжнее координат)"},
+            "long": {"type": "bool", "default": False,
+                     "description": "долгое нажатие (удержание)"},
+        },
+    },
+    "screen.swipe": {
+        "desc": ("Провести пальцем: по направлению (direction) или по координатам. "
+                 "Прокрутка вниз по странице — direction=up."),
+        "devices": [ANDROID_ADB],
+        "args": {
+            "direction": {"type": "str", "enum": ["up", "down", "left", "right"]},
+            "x1": {"type": "int", "min": 0},
+            "y1": {"type": "int", "min": 0},
+            "x2": {"type": "int", "min": 0},
+            "y2": {"type": "int", "min": 0},
+            "duration": {"type": "int", "default": 300, "min": 50, "max": 3000},
+        },
+    },
+    "screen.text": {
+        "desc": ("Ввести текст в активное поле на телефоне. Только латиница и цифры: "
+                 "Android не принимает кириллицу через adb."),
+        "devices": [ANDROID_ADB],
+        "args": {"text": {"type": "str", "required": True, "max_len": 300}},
+    },
+    "screen.key": {
+        "desc": ("Нажать кнопку телефона: back, home, recents, enter, wakeup (разбудить "
+                 "экран), sleep, power, volume_up, volume_down, delete, tab."),
+        "devices": [ANDROID_ADB],
+        "args": {
+            "key": {"type": "str", "required": True,
+                    "enum": ["back", "home", "recents", "enter", "wakeup", "sleep",
+                             "power", "volume_up", "volume_down", "delete", "tab"]},
+        },
     },
 
     # ───────────────────────────── Роутер ─────────────────────────────

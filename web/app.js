@@ -154,6 +154,11 @@ async function telegramLogin() {
   } catch { /* покажем форму токена */ }
 }
 
+function chatSource() {
+  // В мини-приложении реплики и так в Telegram — бот их не пересылает.
+  return tg && tg.initData ? 'tg' : 'web';
+}
+
 async function pickSession() {
   if (state.session) return;
   const userId = tg && tg.initDataUnsafe && tg.initDataUnsafe.user
@@ -726,7 +731,7 @@ async function sendMessage(rawText) {
   const typing = appendTyping();
 
   try {
-    const result = await api('/chat', {
+    const result = await api(`/chat?source=${chatSource()}`, {
       method: 'POST',
       body: JSON.stringify({ message: text, session: state.session }),
     });
@@ -818,7 +823,7 @@ async function sendVoice(blob) {
   try {
     const form = new FormData();
     form.append('file', blob, 'voice.webm');
-    const result = await api(`/voice?chat=true&session=${encodeURIComponent(state.session)}`,
+    const result = await api(`/voice?chat=true&source=${chatSource()}&session=${encodeURIComponent(state.session)}`,
       { method: 'POST', body: form });
     typing.remove();
     if (!result.text) {

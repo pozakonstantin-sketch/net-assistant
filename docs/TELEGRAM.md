@@ -124,9 +124,39 @@ Telegram  ──►  api.telegram.org  ──►  ВМ: core.telegram_bot  ─�
 Эндпоинт ядра — `POST /image` (multipart: `file`, query: `message`, `session`,
 `chat`, `source`).
 
-Telegram требует **HTTPS** для мини-приложения. Панель публикуется через
-исходящий туннель: входящие порты не нужны, домашний IP в интернет не
-выставляется.
+Telegram требует **HTTPS** для мини-приложения. Дома это решает локальный
+HTTPS на ВМ, вне дома — Tailscale Serve (в tailnet) или исходящий туннель.
+
+### Панель по HTTPS в домашней сети (без VPN и туннелей)
+
+Основной способ. Caddy на ВМ слушает LAN-адрес (`192.168.1.161:443`) с
+сертификатом Let's Encrypt, который `tailscale cert` выдаёт для tailnet-имени
+(`astra-hub.taile4385b.ts.net`), и проксирует запросы на `127.0.0.1:8787`.
+На роутере (OpenWrt/dnsmasq) добавлена запись «имя → LAN-адрес ВМ».
+
+Итог: телефон в домашней Wi-Fi открывает `https://astra-hub.taile4385b.ts.net`
+**без Tailscale**, сертификат настоящий, поэтому Telegram не ругается.
+Снаружи тот же адрес работает при включённом Tailscale (Serve).
+
+```bash
+# одной командой: Caddy, сертификат, systemd, DNS на роутере
+sudo /opt/net-assistant/deploy/setup_lan_tls.sh
+
+# проверить с любого устройства в домашней сети
+curl --resolve astra-hub.taile4385b.ts.net:443:192.168.1.161 \
+     https://astra-hub.taile4385b.ts.net/health
+```
+
+Сертификат продлевает `net-assistant-cert.timer` (раз в сутки, с перезагрузкой
+Caddy). Проверка: `systemctl list-timers net-assistant-cert.timer`.
+
+Файлы: `deploy/Caddyfile`, `deploy/net-assistant-tls.service`,
+`deploy/net-assistant-cert.{sh,service,timer}`, `deploy/router_dns_panel.py`.
+
+> На Android включённый «Частный DNS» (Private DNS) с конкретным именем
+> сервера обходит DNS роутера — имя перестанет разрешаться в домашней сети.
+> Нужно «Авто» или «Выкл».
+
 
 ### Туннель localhost.run (без аккаунта)
 
@@ -202,10 +232,9 @@ Funnel формально делает адрес публичным, но пу�
 > **Важно:** если `TELEGRAM_ALLOWED_CHAT_IDS` пуст, вход через панель закрыт
 > полностью — так же, как и у бота. Список пуст → ничего не выполняется.
 
-> Панель доступна только устройствам в вашем tailnet. Если нужен доступ из
-> любой сети — есть `tailscale funnel`, но тогда дашборд станет публичным
-> в интернете. Так делать не стоит, пока `/shots` (скриншоты) отдаётся без
-> авторизации.
+> Панель доступна устройствам в домашней сети (локальный HTTPS) и устройствам
+> в tailnet (Tailscale Serve). Публиковать её в интернет через Funnel не стоит,
+> пока `/shots` (скриншоты) отдаётся без авторизации.
 
 ### Вход в браузере
 

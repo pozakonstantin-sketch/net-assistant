@@ -1,0 +1,6 @@
+[Unit]
+Description=Renew panel TLS certificate
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/net-assistant-cert.sh

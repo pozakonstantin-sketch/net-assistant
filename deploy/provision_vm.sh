@@ -87,8 +87,8 @@ install -m 644 "$INSTALL_DIR/deploy/net-assistant-fake@.service" /etc/systemd/sy
 install -m 644 "$INSTALL_DIR/deploy/tailscale-watchdog.service" /etc/systemd/system/
 install -m 644 "$INSTALL_DIR/deploy/tailscale-watchdog.timer" /etc/systemd/system/
 install -m 755 "$INSTALL_DIR/deploy/tailscale_watchdog.py" /usr/local/bin/tailscale_watchdog.py
-install -m 755 "$INSTALL_DIR/deploy/tunnel-lhr.sh" /usr/local/bin/tunnel-lhr.sh
-install -m 644 "$INSTALL_DIR/deploy/tunnel-lhr.service" /etc/systemd/system/
+install -m 755 "$INSTALL_DIR/deploy/setup_lan_tls.sh" /usr/local/bin/setup_lan_tls.sh
+install -m 755 "$INSTALL_DIR/deploy/router_dns_panel.py" /usr/local/bin/router_dns_panel.py
 systemctl daemon-reload
 systemctl enable --now net-assistant-core.service
 
@@ -99,9 +99,16 @@ done
 echo "== Telegram-бот =="
 if grep -q '^TELEGRAM_BOT_TOKEN=.\+' "$INSTALL_DIR/.env"; then
     systemctl enable --now net-assistant-telegram.service
-    systemctl enable --now tunnel-lhr.service
 else
     echo "TELEGRAM_BOT_TOKEN не задан — бот не включён (впишите токен в .env)"
+fi
+
+echo "== Панель по HTTPS в домашней сети =="
+if command -v tailscale >/dev/null 2>&1; then
+    echo "Ставлю Caddy, сертификат и DNS-запись на роутере (см. docs/TELEGRAM.md)."
+    "$INSTALL_DIR/deploy/setup_lan_tls.sh" || echo "Локальный HTTPS не настроен — повторите: sudo $INSTALL_DIR/deploy/setup_lan_tls.sh"
+else
+    echo "Tailscale не найден — локальный HTTPS не настроен"
 fi
 
 echo "== Сторож tailscaled =="

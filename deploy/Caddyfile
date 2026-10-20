@@ -1,0 +1,13 @@
+{
+	admin off
+	auto_https off
+}
+
+# Локальный HTTPS для панели в домашней сети.
+# Домен и адрес подставляются deploy/setup_lan_tls.sh.
+https://__PANEL_DOMAIN__ {
+	bind __PANEL_BIND__
+	tls /etc/net-assistant/tls/panel.crt /etc/net-assistant/tls/panel.key
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8787
+}

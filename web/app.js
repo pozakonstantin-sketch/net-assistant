@@ -288,6 +288,9 @@ function reportUiMap() {
         + '.screen.active a, .screen.active input, .screen.active textarea');
       const chromeX = window.screenX + Math.max(0, (window.outerWidth - window.innerWidth) / 2);
       const chromeY = window.screenY + Math.max(0, window.outerHeight - window.innerHeight);
+      // Firefox знает точное начало области страницы на экране (без рамок окна).
+      const originX = typeof window.mozInnerScreenX === 'number' ? window.mozInnerScreenX : chromeX;
+      const originY = typeof window.mozInnerScreenY === 'number' ? window.mozInnerScreenY : chromeY;
       const targets = [];
       nodes.forEach((node) => {
         const rect = node.getBoundingClientRect();
@@ -297,8 +300,8 @@ function reportUiMap() {
         if (!label) return;
         targets.push({
           label,
-          x: Math.round(chromeX + rect.left + rect.width / 2),
-          y: Math.round(chromeY + rect.top + rect.height / 2),
+          x: Math.round(originX + rect.left + rect.width / 2),
+          y: Math.round(originY + rect.top + rect.height / 2),
         });
       });
       fetch('/ui/map', {

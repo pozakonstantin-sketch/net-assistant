@@ -1,0 +1,7 @@
+[Unit]
+Description=Net Assistant — снять блокировку экрана ВМ
+After=graphical.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'loginctl unlock-sessions || true'

@@ -30,6 +30,26 @@ install -m 644 "$INSTALL_DIR/deploy/$UNIT" /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable "$UNIT"
 
+echo "== защита от блокировки экрана =="
+install -m 755 "$INSTALL_DIR/deploy/vm_nolock.sh" /usr/local/bin/vm_nolock.sh
+install -d -o "$SERVICE_USER" -g "$SERVICE_USER" "/home/$SERVICE_USER/.config/autostart"
+cat > "/home/$SERVICE_USER/.config/autostart/net-assistant-nolock.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Net Assistant — не блокировать экран
+Exec=/usr/local/bin/vm_nolock.sh
+X-GNOME-Autostart-enabled=true
+EOF
+chown "$SERVICE_USER:$SERVICE_USER" "/home/$SERVICE_USER/.config/autostart/net-assistant-nolock.desktop"
+if [ -e /tmp/.X11-unix/X0 ]; then
+    sudo -u "$SERVICE_USER" env DISPLAY=:0 \
+        XAUTHORITY="/home/$SERVICE_USER/.Xauthority" /usr/local/bin/vm_nolock.sh || true
+fi
+install -m 644 "$INSTALL_DIR/deploy/net-assistant-unlock.service" /etc/systemd/system/
+install -m 644 "$INSTALL_DIR/deploy/net-assistant-unlock.timer" /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now net-assistant-unlock.timer
+
 if [ -e /tmp/.X11-unix/X0 ]; then
     systemctl restart "$UNIT"
     sleep 2

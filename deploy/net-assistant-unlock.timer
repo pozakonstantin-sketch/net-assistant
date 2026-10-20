@@ -1,0 +1,10 @@
+[Unit]
+Description=Net Assistant — периодически снимать блокировку экрана ВМ
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=2min
+Unit=net-assistant-unlock.service
+
+[Install]
+WantedBy=timers.target

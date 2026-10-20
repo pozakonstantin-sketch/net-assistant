@@ -217,13 +217,37 @@ VISION_PROMPT = """Посмотри на изображение и опиши е
 
 UI_PROMPT = """Это снимок экрана компьютера с интерфейсом программы.
 
+На изображении нанесена координатная сетка: красные линии каждые 100 пикселей,
+жёлтые подписи — значения x (сверху) и y (слева). Опирайся на сетку, чтобы
+точнее указывать координаты.
+
 Опиши по-русски, что открыто и что можно нажать:
 1. Назови активное окно и его содержимое.
 2. Перечисли видимые кнопки, поля ввода, ссылки, пункты меню — для каждого
    укажи примерные координаты центра в пикселях: (x=..., y=...) от левого
-   верхнего угла изображения. Координаты оценивай по сетке изображения.
+   верхнего угла изображения.
 3. Если видно поле ввода — скажи, что в нём написано.
 4. Не вызывай инструменты и не предлагай код. Только текст."""
+
+
+def _with_grid(path: Path) -> Path:
+    """Копия снимка с координатной сеткой — модели проще попадать по кнопкам."""
+    from PIL import Image, ImageDraw
+
+    out = path.with_name(f"{path.stem}_grid{path.suffix}")
+    image = Image.open(path).convert("RGB")
+    draw = ImageDraw.Draw(image)
+    width, height = image.size
+    for x in range(100, width, 100):
+        draw.line([(x, 0), (x, height)], fill=(255, 64, 64), width=1)
+        draw.text((x + 2, 2), str(x), fill=(255, 255, 0), stroke_width=1,
+                  stroke_fill=(0, 0, 0))
+    for y in range(100, height, 100):
+        draw.line([(0, y), (width, y)], fill=(255, 64, 64), width=1)
+        draw.text((2, y + 1), str(y), fill=(255, 255, 0), stroke_width=1,
+                  stroke_fill=(0, 0, 0))
+    image.save(out)
+    return out
 
 
 async def describe_image(path: Path, hint: str = "", prompt: str | None = None) -> str:
@@ -419,9 +443,14 @@ async def run_turn(user_text: str, history: list[dict]) -> dict:
                 if action == "vm.screenshot" and isinstance(result, dict) and result.get("file"):
                     try:
                         result = dict(result)
-                        result["description"] = await describe_image(
-                            Path(result["file"]), prompt=UI_PROMPT
-                        )
+                        shot = Path(result["file"])
+                        gridded = _with_grid(shot)
+                        try:
+                            result["description"] = await describe_image(
+                                gridded, prompt=UI_PROMPT
+                            )
+                        finally:
+                            gridded.unlink(missing_ok=True)
                     except (RuntimeError, OSError) as exc:
                         log.warning("описание снимка ВМ не получено: %s", exc)
                         result = dict(result)

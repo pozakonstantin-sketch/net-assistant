@@ -310,18 +310,24 @@ def vm_windows(_args: dict) -> dict:
     return {"count": len(windows), "windows": windows[:30]}
 
 
-def vm_panel(_args: dict) -> dict:
-    """Открыть панель ассистента в браузере ВМ с токеном (без ввода пароля)."""
+def vm_panel(args: dict) -> dict:
+    """Открыть панель ассистента в браузере ВМ с токеном (без ввода пароля).
+
+    screen: chat | devices | activity | more — сразу нужный раздел.
+    """
     from core.config import settings
 
-    url = f"http://127.0.0.1:8787/?token={settings.token}"
+    screen = str(args.get("screen") or "chat").strip().lower()
+    if screen not in {"chat", "devices", "activity", "more"}:
+        screen = "chat"
+    url = f"http://127.0.0.1:8787/?token={settings.token}#{screen}"
     subprocess.Popen(
         ["xdg-open", url],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
-    return {"opened": "панель ассистента", "url": "http://127.0.0.1:8787/"}
+    return {"opened": f"панель: {screen}", "url": f"http://127.0.0.1:8787/#{screen}"}
 
 
 def vm_open(args: dict) -> dict:

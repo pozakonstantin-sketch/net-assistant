@@ -330,9 +330,10 @@ CATALOG: dict[str, dict[str, Any]] = {
     },
     "vm.panel": {
         "desc": ("Открыть панель ассистента в браузере ВМ. Токен подставляется "
-                 "сам — вводить ничего не нужно."),
+                 "сам — вводить ничего не нужно. screen: chat, devices, activity, more."),
         "devices": [VM],
-        "args": {},
+        "args": {"screen": {"type": "str", "default": "chat",
+                            "enum": ["chat", "devices", "activity", "more"]}},
     },
     "vm.move": {
         "desc": "Навести курсор на рабочем столе ВМ (без клика).",

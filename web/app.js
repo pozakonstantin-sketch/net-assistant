@@ -215,6 +215,13 @@ function showApp() {
   $('#app').classList.remove('hidden');
 }
 
+/* Экран можно задать ссылкой: #devices, #activity, #more — удобно для
+   закладок и для агента ВМ, который открывает нужный раздел без кликов. */
+function initialScreen() {
+  const name = (location.hash || '').replace(/^#/, '');
+  return SCREENS[name] ? name : 'chat';
+}
+
 let syncTimer = null;
 
 function startSync() {
@@ -235,6 +242,7 @@ async function boot() {
   }
   await Promise.all([loadModels(), loadHistory()]);
   showApp();
+  showScreen(initialScreen(), { silent: true });
   updateAppbar();
   syncVoiceToggle();
   startSync();
@@ -245,9 +253,12 @@ async function boot() {
 
 /* ─────────────────────────── экраны ─────────────────────────── */
 
-function showScreen(name) {
+function showScreen(name, options = {}) {
   if (!SCREENS[name]) return;
   state.screen = name;
+  if (!options.silent && location.hash !== `#${name}`) {
+    history.replaceState(null, '', `${location.pathname}${location.search}#${name}`);
+  }
   $$('.screen').forEach((node) => node.classList.toggle('active', node.dataset.screen === name));
   $$('.nav-item').forEach((node) => node.classList.toggle('active', node.dataset.screen === name));
   $('#composer').classList.toggle('hidden', name !== 'chat');
@@ -1026,6 +1037,11 @@ $$('.nav-item').forEach((item) => {
     haptic();
     showScreen(item.dataset.screen);
   };
+});
+
+window.addEventListener('hashchange', () => {
+  const name = initialScreen();
+  if (name !== state.screen) showScreen(name, { silent: true });
 });
 
 $('#send').onclick = () => {

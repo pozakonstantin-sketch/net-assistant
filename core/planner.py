@@ -95,15 +95,19 @@ def _self_text() -> str:
     import platform
 
     pretty = ""
+    version = ""
     try:
         for line in Path("/etc/os-release").read_text(encoding="utf-8").splitlines():
             if line.startswith("PRETTY_NAME="):
                 pretty = line.split("=", 1)[1].strip().strip('"')
-                break
+            elif line.startswith("VERSION_ID="):
+                version = line.split("=", 1)[1].strip().strip('"')
     except OSError:
         pass
     if not pretty:
         pretty = f"{platform.system()} {platform.release()}"
+    if version:
+        pretty = f"{pretty} {version.replace('_x86-64', '')}"
 
     memory = ""
     try:
@@ -115,8 +119,8 @@ def _self_text() -> str:
         pass
 
     parts = [
-        f"Ты — ядро ассистента Net Assistant. Живёшь в виртуальной машине, "
-        f"а не на телефоне, ПК или роутере.",
+        f"Ты — ядро ассистента Net Assistant. Живёшь в виртуальной машине "
+        f"на Hyper-V, а не на телефоне, ПК или роутере.",
         f"ОС ядра: {pretty}, ядро {platform.release()}, машина {platform.node()} "
         f"({platform.machine()})",
     ]

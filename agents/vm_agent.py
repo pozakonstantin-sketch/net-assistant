@@ -103,11 +103,13 @@ def vm_info(_args: dict) -> dict:
     dpy = _display()
     screen = dpy.screen()
     pretty = ""
+    version = ""
     try:
         for line in Path("/etc/os-release").read_text(encoding="utf-8").splitlines():
             if line.startswith("PRETTY_NAME="):
                 pretty = line.split("=", 1)[1].strip().strip('"')
-                break
+            elif line.startswith("VERSION_ID="):
+                version = line.split("=", 1)[1].strip().strip('"')
     except OSError:
         pass
     return {
@@ -118,6 +120,7 @@ def vm_info(_args: dict) -> dict:
         "user": os.getenv("USER", ""),
         "host": platform.node(),
         "os": pretty or platform.system(),
+        "version": version,
         "kernel": platform.release(),
         "arch": platform.machine(),
     }

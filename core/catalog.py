@@ -20,6 +20,8 @@ ANDROID = "android"
 # экран телефона через adb: агент работает в ВМ
 ANDROID_ADB = "android-adb"
 ROUTER = "router"
+# рабочий стол Astra Linux внутри ВМ: скриншоты, клики, ввод
+VM = "vm-desktop"
 
 CATALOG: dict[str, dict[str, Any]] = {
     # ───────────────────────────── ПК (Windows) ─────────────────────────────
@@ -301,6 +303,70 @@ CATALOG: dict[str, dict[str, Any]] = {
                     "enum": ["back", "home", "recents", "enter", "wakeup", "sleep",
                              "power", "volume_up", "volume_down", "delete", "tab"]},
         },
+    },
+
+    # ─────────────────────── Рабочий стол ВМ (Astra) ───────────────────────
+    "vm.info": {
+        "desc": "Сведения об экране ВМ: разрешение, дисплей, пользователь сессии.",
+        "devices": [VM],
+        "args": {},
+    },
+    "vm.screenshot": {
+        "desc": ("Снимок экрана ВМ (рабочий стол Astra Linux). Ядро вернёт ссылку "
+                 "на файл — по ней видно, что открыто и где нажимать."),
+        "devices": [VM],
+        "args": {},
+    },
+    "vm.windows": {
+        "desc": "Список видимых окон на рабочем столе ВМ с именами и координатами.",
+        "devices": [VM],
+        "args": {},
+    },
+    "vm.open": {
+        "desc": ("Открыть ссылку или файл на ВМ в приложении по умолчанию "
+                 "(например, панель в браузере)."),
+        "devices": [VM],
+        "args": {"target": {"type": "str", "required": True, "max_len": 512}},
+    },
+    "vm.move": {
+        "desc": "Навести курсор на рабочем столе ВМ (без клика).",
+        "devices": [VM],
+        "args": {
+            "x": {"type": "int", "required": True, "min": 0, "max": 8000},
+            "y": {"type": "int", "required": True, "min": 0, "max": 8000},
+        },
+    },
+    "vm.click": {
+        "desc": ("Клик мышью на рабочем столе ВМ по координатам (x, y из снимка "
+                 "экрана). button: 1 — левая, 3 — правая. count=2 — двойной клик."),
+        "devices": [VM],
+        "args": {
+            "x": {"type": "int", "required": True, "min": 0, "max": 8000},
+            "y": {"type": "int", "required": True, "min": 0, "max": 8000},
+            "button": {"type": "int", "default": 1, "min": 1, "max": 3},
+            "count": {"type": "int", "default": 1, "min": 1, "max": 3},
+        },
+    },
+    "vm.scroll": {
+        "desc": "Прокрутить колесом на рабочем столе ВМ: amount>0 — вниз, <0 — вверх.",
+        "devices": [VM],
+        "args": {
+            "amount": {"type": "int", "default": 3, "min": -15, "max": 15},
+            "x": {"type": "int", "default": None},
+            "y": {"type": "int", "default": None},
+        },
+    },
+    "vm.type": {
+        "desc": ("Ввести текст в активное поле на ВМ (кириллица и латиница — "
+                 "через буфер обмена)."),
+        "devices": [VM],
+        "args": {"text": {"type": "str", "required": True, "max_len": 2000}},
+    },
+    "vm.key": {
+        "desc": ("Нажать клавишу или сочетание на ВМ: Return, Escape, Tab, "
+                 "BackSpace, Up/Down/Left/Right, F5, ctrl+l, ctrl+alt+t."),
+        "devices": [VM],
+        "args": {"key": {"type": "str", "required": True, "max_len": 64}},
     },
 
     # ───────────────────────────── Роутер ─────────────────────────────

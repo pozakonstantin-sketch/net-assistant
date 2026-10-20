@@ -9,6 +9,13 @@ const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
 const tg = window.Telegram && window.Telegram.WebApp;
 
+// Токен можно передать ссылкой (?token=...) — удобно для скриптов и агента ВМ.
+const urlToken = new URLSearchParams(location.search).get('token');
+if (urlToken) {
+  localStorage.setItem('na_token', urlToken);
+  history.replaceState(null, '', location.pathname + location.hash);
+}
+
 const state = {
   token: localStorage.getItem('na_token') || '',
   session: '',

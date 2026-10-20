@@ -92,6 +92,7 @@ install -m 644 "$INSTALL_DIR/deploy/tailscale-watchdog.service" /etc/systemd/sys
 install -m 644 "$INSTALL_DIR/deploy/tailscale-watchdog.timer" /etc/systemd/system/
 install -m 755 "$INSTALL_DIR/deploy/tailscale_watchdog.py" /usr/local/bin/tailscale_watchdog.py
 install -m 755 "$INSTALL_DIR/deploy/setup_lan_tls.sh" /usr/local/bin/setup_lan_tls.sh
+install -m 755 "$INSTALL_DIR/deploy/setup_vm_desktop.sh" /usr/local/bin/setup_vm_desktop.sh
 install -m 755 "$INSTALL_DIR/deploy/router_dns_panel.py" /usr/local/bin/router_dns_panel.py
 systemctl daemon-reload
 systemctl enable --now net-assistant-core.service
@@ -114,6 +115,10 @@ if command -v tailscale >/dev/null 2>&1; then
 else
     echo "Tailscale не найден — локальный HTTPS не настроен"
 fi
+
+echo "== Рабочий стол ВМ (ИИ видит экран) =="
+install -m 755 "$INSTALL_DIR/deploy/setup_vm_desktop.sh" /usr/local/bin/setup_vm_desktop.sh
+"$INSTALL_DIR/deploy/setup_vm_desktop.sh" || echo "Агент рабочего стола не включён — повторите: sudo $INSTALL_DIR/deploy/setup_vm_desktop.sh"
 
 echo "== Сторож tailscaled =="
 if command -v tailscale >/dev/null 2>&1; then

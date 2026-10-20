@@ -1,0 +1,18 @@
+[Unit]
+Description=Net Assistant — агент рабочего стола ВМ (X11)
+After=graphical.target net-assistant-core.service
+Wants=graphical.target
+
+[Service]
+Type=simple
+User=assistant
+WorkingDirectory=/opt/net-assistant
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/assistant/.Xauthority
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+ExecStart=/opt/net-assistant/.venv/bin/python -m agents.vm_agent
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=graphical.target

@@ -98,14 +98,28 @@ def _tap(dpy, keys: list[str]) -> None:
 
 
 def vm_info(_args: dict) -> dict:
+    import platform
+
     dpy = _display()
     screen = dpy.screen()
+    pretty = ""
+    try:
+        for line in Path("/etc/os-release").read_text(encoding="utf-8").splitlines():
+            if line.startswith("PRETTY_NAME="):
+                pretty = line.split("=", 1)[1].strip().strip('"')
+                break
+    except OSError:
+        pass
     return {
         "display": os.environ["DISPLAY"],
         "width": screen.width_in_pixels,
         "height": screen.height_in_pixels,
         "session": os.getenv("DESKTOP_SESSION", ""),
         "user": os.getenv("USER", ""),
+        "host": platform.node(),
+        "os": pretty or platform.system(),
+        "kernel": platform.release(),
+        "arch": platform.machine(),
     }
 
 

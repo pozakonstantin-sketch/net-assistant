@@ -90,6 +90,54 @@ def workdir() -> Path:
 # ─────────────────────────── описание возможностей ───────────────────────────
 
 
+def _self_text() -> str:
+    """Факты о самой ВМ: чтобы модель не выдумывала, где она работает."""
+    import platform
+
+    pretty = ""
+    try:
+        for line in Path("/etc/os-release").read_text(encoding="utf-8").splitlines():
+            if line.startswith("PRETTY_NAME="):
+                pretty = line.split("=", 1)[1].strip().strip('"')
+                break
+    except OSError:
+        pass
+    if not pretty:
+        pretty = f"{platform.system()} {platform.release()}"
+
+    memory = ""
+    try:
+        for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
+            if line.startswith("MemTotal:"):
+                memory = f"{int(line.split()[1]) / 1024 / 1024:.1f} ГБ"
+                break
+    except (OSError, ValueError, IndexError):
+        pass
+
+    parts = [
+        f"Ты — ядро ассистента Net Assistant. Живёшь в виртуальной машине, "
+        f"а не на телефоне, ПК или роутере.",
+        f"ОС ядра: {pretty}, ядро {platform.release()}, машина {platform.node()} "
+        f"({platform.machine()})",
+    ]
+    if os.cpu_count():
+        parts.append(f"Ресурсы ВМ: {os.cpu_count()} vCPU" + (f", ОЗУ {memory}" if memory else ""))
+    parts.append(
+        "Панель управления — на этой же машине: http://127.0.0.1:8787 "
+        "и https://astra-hub.taile4385b.ts.net (домашняя сеть)."
+    )
+    parts.append(
+        "Устройство vm-desktop («Рабочий стол ВМ») — графическая сессия этой же "
+        "ВМ: через него ты открываешь панель, кликаешь и вводишь текст. "
+        "ПК (pc-desktop) — отдельная Windows-машина, телефон и роутер — тоже отдельно."
+    )
+    parts.append(
+        "На вопросы о своей ОС отвечай этими данными. Не выдумывай контейнеры, "
+        "каталоги или другие системы."
+    )
+    return "\n".join(parts)
+
+
 def _devices_text() -> str:
     devices = hub.online_devices()
     if not devices:
@@ -129,6 +177,7 @@ def _render_history(history: list[dict]) -> str:
 def _base_prompt() -> str:
     return (
         f"{SYSTEM_PROMPT}\n\n"
+        f"О тебе:\n{_self_text()}\n\n"
         f"Устройства:\n{_devices_text()}\n\n"
         f"Действия:\n{_actions_text()}\n\n"
     )

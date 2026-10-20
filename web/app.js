@@ -154,7 +154,7 @@ async function telegramLogin() {
   } catch { /* покажем форму токена */ }
 }
 
-function pickSession() {
+async function pickSession() {
   if (state.session) return;
   const userId = tg && tg.initDataUnsafe && tg.initDataUnsafe.user
     ? tg.initDataUnsafe.user.id : null;
@@ -163,10 +163,15 @@ function pickSession() {
     return;
   }
   let session = localStorage.getItem('na_session');
-  if (!session) {
-    session = `web-${Math.random().toString(36).slice(2, 10)}`;
-    localStorage.setItem('na_session', session);
+  if (!session || session.startsWith('web-')) {
+    // Одна переписка на всех устройствах: сессию задаёт ядро.
+    try {
+      const data = await api('/session');
+      session = data.session || session;
+    } catch { /* ядро недоступно — останемся на локальной */ }
   }
+  if (!session) session = `web-${Math.random().toString(36).slice(2, 10)}`;
+  localStorage.setItem('na_session', session);
   state.session = session;
 }
 
@@ -185,12 +190,19 @@ function showApp() {
   $('#app').classList.remove('hidden');
 }
 
+let syncTimer = null;
+
+function startSync() {
+  if (syncTimer) return;
+  syncTimer = setInterval(refreshHistory, 4000);
+}
+
 async function boot() {
   initTelegram();
   if (!state.token && tg && tg.initData) await telegramLogin();
   if (!state.token) return showLogin();
 
-  pickSession();
+  await pickSession();
   try {
     await refreshMeta(true);
   } catch (error) {
@@ -200,6 +212,7 @@ async function boot() {
   showApp();
   updateAppbar();
   syncVoiceToggle();
+  startSync();
   setInterval(() => {
     if (!document.hidden && !$('#app').classList.contains('hidden')) refreshMeta();
   }, 6000);
@@ -501,17 +514,41 @@ function renderAudit(records) {
 
 /* ─────────────────────────── чат ─────────────────────────── */
 
+let historyStamp = '';
+
+function stampOfHistory(messages) {
+  const last = messages[messages.length - 1];
+  return `${messages.length}:${last ? last.ts : 0}`;
+}
+
 async function loadHistory() {
   try {
     const data = await api(`/history?session=${encodeURIComponent(state.session)}&limit=200`);
-    renderHistory(data.messages || []);
+    const messages = data.messages || [];
+    historyStamp = stampOfHistory(messages);
+    renderHistory(messages);
   } catch (error) {
     if (error.message !== 'unauthorized') renderHistory([]);
   }
 }
 
+// Подтягиваем чужие реплики: чат общий для телефона, бота и этого браузера.
+async function refreshHistory() {
+  if (document.hidden || !state.session || state.busy) return;
+  if ($('#app').classList.contains('hidden')) return;
+  try {
+    const data = await api(`/history?session=${encodeURIComponent(state.session)}&limit=200`);
+    const messages = data.messages || [];
+    const stamp = stampOfHistory(messages);
+    if (stamp === historyStamp) return;
+    historyStamp = stamp;
+    renderHistory(messages);
+  } catch { /* сеть моргнула — попробуем на следующем тике */ }
+}
+
 function renderHistory(messages) {
   const box = $('#messages');
+  const distance = box.scrollHeight - box.scrollTop - box.clientHeight;
   box.innerHTML = '';
   if (!messages.length) {
     renderEmptyState();
@@ -520,7 +557,12 @@ function renderHistory(messages) {
   for (const message of messages) {
     appendMessage(message.role, message.text, message.executed, message.pending, message.ts);
   }
-  scrollBottom(true);
+  if (distance > 120) {
+    // Пользователь читает старые сообщения — не дёргаем экран.
+    box.scrollTop = box.scrollHeight - box.clientHeight - distance;
+  } else {
+    scrollBottom(true);
+  }
 }
 
 function renderEmptyState() {
@@ -914,12 +956,13 @@ $('#save-token').onclick = async () => {
     const devices = await api('/devices');
     localStorage.setItem('na_token', token);
     state.devices = devices.devices || [];
-    pickSession();
+    await pickSession();
     await refreshMeta(true);
     await Promise.all([loadModels(), loadHistory()]);
     showApp();
     updateAppbar();
     syncVoiceToggle();
+    startSync();
   } catch (error) {
     if (error.message !== 'unauthorized') $('#login-error').textContent = error.message;
   }

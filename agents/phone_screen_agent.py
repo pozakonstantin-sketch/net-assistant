@@ -325,35 +325,45 @@ def display_ids() -> list[int]:
     return [int(value) for value in re.findall(r"Display (\d+)", text)]
 
 
-def screen_shot(_args: dict) -> dict:
-    """Снимок основного дисплея.
+def _shot(png: bytes) -> dict:
+    return {"image_b64": base64.b64encode(png).decode("ascii"),
+            "bytes": len(png), "size": _png_size(png)}
 
-    У Honor два дисплея (основной и внешний), и screencap по умолчанию снимает
-    не тот — получается чёрный кадр. Поэтому пробуем все дисплеи и выбираем
-    тот, чей размер совпадает с экраном из `wm size`.
+
+def _png_body(raw: bytes) -> bytes | None:
+    start = raw.find(PNG_MAGIC)
+    return raw[start:] if start >= 0 else None
+
+
+def screen_shot(_args: dict) -> dict:
+    """Снимок активного дисплея.
+
+    Honor — складной: у него основной и внешний дисплеи. `screencap -d <id>`
+    для выключенного дисплея отдаёт чёрный кадр, а в сложенном состоянии
+    размеры дисплеев могут совпадать, поэтому выбор «по размеру» ошибается.
+    Сначала просим `screencap` без -d: Android сам снимает активный дисплей.
+    Перебор id — только запасной вариант.
     """
     expected = phone.screen_size()
-    candidates: list[tuple[int, bytes]] = []
-    for display in display_ids():
-        raw = phone.exec_out(f"screencap -d {display} -p", timeout=45)
-        start = raw.find(PNG_MAGIC)
-        if start < 0:
-            continue
-        plain = raw[start:]
-        candidates.append((display, plain))
-        if _png_size(plain) == expected:
-            chosen = plain
-            break
-    else:
-        if not candidates:
-            raise RuntimeError(
-                "телефон не отдал снимок экрана (экран может быть защищён)"
-            )
-        candidates.sort(key=lambda item: len(item[1]), reverse=True)
-        chosen = candidates[0][1]
 
-    return {"image_b64": base64.b64encode(chosen).decode("ascii"),
-            "bytes": len(chosen), "size": _png_size(chosen)}
+    default = _png_body(phone.exec_out("screencap -p", timeout=45))
+    if default and _png_size(default) == expected:
+        return _shot(default)
+
+    candidates: list[bytes] = [default] if default else []
+    for display in display_ids():
+        plain = _png_body(phone.exec_out(f"screencap -d {display} -p", timeout=45))
+        if plain:
+            candidates.append(plain)
+
+    if not candidates:
+        raise RuntimeError(
+            "телефон не отдал снимок экрана (экран может быть защищён)"
+        )
+
+    matching = [item for item in candidates if _png_size(item) == expected]
+    chosen = max(matching or candidates, key=len)
+    return _shot(chosen)
 
 
 def screen_ui(args: dict) -> dict:

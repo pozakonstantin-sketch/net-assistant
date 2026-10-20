@@ -217,12 +217,19 @@ Invoke-RestMethod http://127.0.0.1:8787/confirm/ab12cd -Method Post -Headers $h
 Invoke-RestMethod http://127.0.0.1:8787/devices -Headers $h
 Invoke-RestMethod http://127.0.0.1:8787/audit?limit=20 -Headers $h
 
-# сохранённая переписка (tg-<id> в Telegram, web-<id> в браузере)
-Invoke-RestMethod "http://127.0.0.1:8787/history?session=web-demo&limit=50" -Headers $h
+# единая сессия для всех устройств (бот, мини-апп, браузер)
+Invoke-RestMethod http://127.0.0.1:8787/session -Headers $h
+
+# сохранённая переписка (по умолчанию tg-<id владельца>)
+Invoke-RestMethod "http://127.0.0.1:8787/history?session=tg-123456789&limit=50" -Headers $h
 Invoke-RestMethod http://127.0.0.1:8787/sessions -Headers $h
 
+# распознать скриншот и ответить в диалоге
+curl.exe -X POST -H "Authorization: Bearer $env:TOKEN" -F "file=@screen.png" `
+  "http://127.0.0.1:8787/image?chat=true&session=tg-123456789&message=что%20тут%3F"
+
 # очистить контекст и историю сессии
-Invoke-RestMethod http://127.0.0.1:8787/session/web-demo -Method Delete -Headers $h
+Invoke-RestMethod http://127.0.0.1:8787/session/tg-123456789 -Method Delete -Headers $h
 
 # состояние ядра и активный планировщик (доступно без токена)
 Invoke-RestMethod http://127.0.0.1:8787/health

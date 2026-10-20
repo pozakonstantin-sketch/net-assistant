@@ -58,7 +58,6 @@ SYSTEM_PROMPT = """Ты — планировщик домашнего ассис
 
 # ─────────────────────────── доступность CLI ───────────────────────────
 
-
 def binary_path() -> str | None:
     candidates = [
         settings.opencode_bin or "",
@@ -199,6 +198,71 @@ async def _ask_opencode(prompt: str, attempt: int = 0) -> str:
             return await _ask_opencode(prompt, attempt=1)
         raise RuntimeError(
             "OpenCode вернул пустой ответ" + (f": {detail}" if detail else "")
+        )
+    return answer
+
+
+# ─────────────────────── распознавание изображений ───────────────────────
+
+VISION_PROMPT = """Посмотри на изображение и опиши его по-русски.
+
+1. Скажи, что изображено: экран телефона, окно программы, фото.
+2. Перепиши дословно весь важный текст: сообщения об ошибках, заголовки,
+   названия кнопок, адреса, числа. Если это скриншот ошибки — обязательно
+   приведи её текст.
+3. Если на картинке есть вопрос или просьба — перескажи их.
+4. Ответь только текстом. Инструментов у тебя нет: не вызывай Read, Bash,
+   Glob и прочее."""
+
+
+async def describe_image(path: Path, hint: str = "") -> str:
+    """Распознать скриншот/фото моделью со зрением и вернуть описание."""
+    binary = binary_path()
+    if binary is None:
+        raise RuntimeError(
+            "не найден CLI opencode — распознавание изображений недоступно"
+        )
+
+    prompt = VISION_PROMPT
+    if hint:
+        prompt += f"\n\nПодпись пользователя к изображению: {hint}"
+
+    model = settings.vision_model
+    # ВАЖНО: сообщение идёт первым. У `--file` массив-аргумент, и если флаг
+    # стоит раньше текста, CLI пытается открыть сам текст как файл.
+    command = [binary, "run", prompt, "-m", model, f"--file={path}"]
+    log.info("openCode vision: %s, файл %s", model, path.name)
+
+    async with _run_lock:
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(workdir()),
+            env=dict(os.environ),
+            start_new_session=True,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(), timeout=settings.opencode_timeout
+            )
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.wait()
+            raise RuntimeError(
+                f"модель зрения не ответила за {settings.opencode_timeout:.0f} с"
+            ) from None
+
+    answer = _strip_ansi(stdout.decode("utf-8", "replace"))
+    # CLI печатает служебную строку «> build · <модель>» — убираем её.
+    lines = [line for line in answer.splitlines()
+             if not (line.lstrip().startswith(">") and "·" in line)]
+    answer = "\n".join(lines).strip()
+    if not answer:
+        detail = _strip_ansi(stderr.decode("utf-8", "replace")).strip()[-500:]
+        raise RuntimeError(
+            "модель зрения вернула пустой ответ" + (f": {detail}" if detail else "")
         )
     return answer
 

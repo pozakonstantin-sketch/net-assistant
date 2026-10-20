@@ -24,7 +24,7 @@ from pathlib import Path
 
 import httpx
 
-from .config import DATA_DIR, settings
+from .config import DATA_DIR, canonical_session, settings
 
 log = logging.getLogger("telegram")
 
@@ -137,6 +137,8 @@ class Telegram:
         self.core = settings.telegram_core_url
         self.session_token = settings.token
         self.client = httpx.AsyncClient(timeout=POLL_TIMEOUT + 20)
+        # Сколько реплик сессии бот уже показал/переслал в Telegram.
+        self.seen: dict[str, int] = {}
 
     # ── Telegram Bot API ──
 
@@ -182,6 +184,10 @@ class Telegram:
 
     # ── ядро ──
 
+    def session_for(self, chat_id: int) -> str:
+        """Сессия диалога: одна для всех устройств (бот, мини-апп, браузер)."""
+        return canonical_session()
+
     async def core_call(self, method: str, path: str, payload: dict | None = None) -> dict:
         headers = {"Authorization": f"Bearer {self.session_token}"}
         response = await self.client.request(method, f"{self.core}{path}",
@@ -203,12 +209,54 @@ class Telegram:
             await self.on_command(chat_id, text)
             return
         try:
-            data = await self.core_call("POST", "/chat",
-                                        {"message": text, "session": f"{SESSION_PREFIX}{chat_id}"})
+            data = await self.core_call("POST", "/chat?source=tg",
+                                        {"message": text, "session": self.session_for(chat_id)})
         except RuntimeError as exc:
             await self.send(chat_id, f"⚠️ Ошибка: {_esc(exc)}", reply_to=message_id)
             return
         await self.reply(chat_id, data)
+
+    async def on_photo(self, chat_id: int, photos: list, caption: str,
+                       message_id: int) -> None:
+        """Скриншот или фото: распознаём моделью зрения и отвечаем как в чате."""
+        await self.typing(chat_id)
+        photo = max(photos, key=lambda item: item.get("file_size") or 0)
+        try:
+            info = await self.api("getFile", {"file_id": photo["file_id"]})
+            remote = info["result"]["file_path"]
+            response = await self.client.get(f"{API}/file/bot{self.token}/{remote}")
+            response.raise_for_status()
+        except Exception as exc:  # noqa: BLE001
+            await self.send(chat_id, f"⚠️ Не смог скачать изображение: {_esc(exc)}")
+            return
+
+        headers = {"Authorization": f"Bearer {self.session_token}"}
+        files = {"file": (Path(remote).name or "photo.jpg", response.content,
+                          response.headers.get("content-type", "image/jpeg"))}
+        params = {"chat": "true", "session": self.session_for(chat_id),
+                  "message": caption or "", "source": "tg"}
+        try:
+            core = await self.client.post(f"{self.core}/image", headers=headers,
+                                          params=params, files=files, timeout=240)
+        except Exception as exc:  # noqa: BLE001
+            await self.send(chat_id, f"⚠️ Изображение не обработано: {_esc(exc)}")
+            return
+
+        if core.status_code >= 400:
+            detail = core.text[:300]
+            try:
+                detail = core.json().get("detail", detail)
+            except Exception:  # noqa: BLE001
+                pass
+            await self.send(chat_id, f"⚠️ Не удалось распознать изображение: {_esc(detail)}")
+            return
+
+        data = core.json()
+        seen = str(data.get("text") or "").strip()
+        if seen:
+            await self.send(chat_id, f"👁 <i>{_esc(seen[:1200])}</i>",
+                            reply_to=message_id)
+        await self.reply(chat_id, data, reply_to=message_id)
 
     async def on_command(self, chat_id: int, text: str) -> None:
         command = text.split()[0].lower().lstrip("/")
@@ -222,7 +270,7 @@ class Telegram:
         elif command == "pending":
             await self.pending(chat_id)
         elif command == "reset":
-            await self.core_call("DELETE", f"/session/{SESSION_PREFIX}{chat_id}")
+            await self.core_call("DELETE", f"/session/{self.session_for(chat_id)}")
             await self.send(chat_id, "🧹 Контекст диалога очищен.")
         elif command == "panel":
             if settings.telegram_webapp_url:
@@ -331,7 +379,9 @@ class Telegram:
         try:
             if data.startswith("confirm:"):
                 token = data.split(":", 1)[1]
-                outcome = await self.core_call("POST", f"/confirm/{token}")
+                session = self.session_for(chat_id)
+                outcome = await self.core_call(
+                    "POST", f"/confirm/{token}?session={session}&source=tg")
                 await self.api("answerCallbackQuery",
                                {"callback_query_id": callback_id, "text": "Выполняю"})
                 await self.send(chat_id, _format_action(outcome))
@@ -345,7 +395,7 @@ class Telegram:
                 await self.models(chat_id, data.split(":", 1)[1])
             elif data.startswith("cancel:"):
                 await self.core_call("POST", "/chat",
-                                     {"message": "отмена", "session": f"{SESSION_PREFIX}{chat_id}"})
+                                     {"message": "отмена", "session": self.session_for(chat_id)})
                 await self.api("answerCallbackQuery",
                                {"callback_query_id": callback_id, "text": "Отменено"})
                 await self.send(chat_id, "🚫 Отменено.")
@@ -368,7 +418,8 @@ class Telegram:
 
         headers = {"Authorization": f"Bearer {self.session_token}"}
         files = {"file": ("voice.ogg", response.content, "audio/ogg")}
-        params = {"chat": "true", "session": f"{SESSION_PREFIX}{chat_id}"}
+        params = {"chat": "true", "session": self.session_for(chat_id),
+                  "source": "tg"}
         core = await self.client.post(f"{self.core}/voice", headers=headers,
                                       params=params, files=files)
         if core.status_code >= 400:
@@ -428,6 +479,10 @@ class Telegram:
                 await self.guard(chat_id, message_id, lambda: self.on_voice(
                     chat_id, message["voice"], message_id))
                 return
+            if message.get("photo"):
+                await self.guard(chat_id, message_id, lambda: self.on_photo(
+                    chat_id, message["photo"], message.get("caption") or "", message_id))
+                return
             if not text:
                 return
             await self.guard(chat_id, message_id, lambda: self.on_text(chat_id, text, message_id))
@@ -458,6 +513,50 @@ class Telegram:
             log.exception("сбой обработки")
             await self.send(chat_id, f"⚠️ Внутренняя ошибка: {_esc(exc)}")
 
+    # ── синхронизация между устройствами ──
+
+    async def sync_loop(self, chat_id: int) -> None:
+        """Пересылать в Telegram реплики, написанные с других устройств.
+
+        Все устройства пишут в одну сессию (`canonical_session`), а этот цикл
+        показывает в чате Telegram то, что пришло из веб-панели или мини-аппа.
+        Свои же сообщения (source=tg) не дублируем.
+        """
+        session = canonical_session()
+        last_ts = 0.0
+        try:
+            data = await self.core_call("GET", f"/history?session={session}&limit=1")
+            items = data.get("messages") or []
+            if items:
+                last_ts = float(items[-1].get("ts") or 0.0)
+        except RuntimeError:
+            pass
+
+        while True:
+            await asyncio.sleep(4)
+            try:
+                data = await self.core_call(
+                    "GET", f"/history?session={session}&limit=200")
+            except RuntimeError:
+                continue
+            for item in data.get("messages") or []:
+                ts = float(item.get("ts") or 0.0)
+                if ts <= last_ts:
+                    continue
+                last_ts = max(last_ts, ts)
+                if item.get("source") == "tg":
+                    continue
+                text = str(item.get("text") or "").strip()
+                if not text:
+                    continue
+                if item.get("role") == "user":
+                    log.info("sync → Telegram: реплика пользователя с другого устройства")
+                    await self.send(chat_id,
+                                    f"🌐 <i>С другого устройства:</i>\n{_esc(text)}")
+                elif item.get("role") == "assistant":
+                    log.info("sync → Telegram: ответ ассистента для другого устройства")
+                    await self.send(chat_id, _esc(text))
+
     async def run(self) -> None:
         if not self.token:
             raise SystemExit("не задан TELEGRAM_BOT_TOKEN в .env")
@@ -470,6 +569,11 @@ class Telegram:
             await self.set_menu_button()
         await self.set_commands()
         log.info("бот @%s запущен, ядро: %s", name, self.core)
+
+        owner = sorted(_allowed())
+        if owner:
+            asyncio.create_task(self.sync_loop(int(owner[0])))
+            log.info("синхронизация переписки с другими устройствами: включена")
 
         offset = 0
         while True:

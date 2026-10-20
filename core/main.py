@@ -12,7 +12,9 @@ import logging
 import re
 import secrets
 import tarfile
+import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
@@ -22,9 +24,9 @@ from pydantic import BaseModel, Field
 
 from . import catalog
 from . import history as chat_history
-from . import llm, models, voice
+from . import llm, models, planner, voice
 from .audit import audit
-from .config import BASE_DIR, settings
+from .config import BASE_DIR, DATA_DIR, canonical_session, settings
 from .files import SHOTS_DIR
 from .hub import CommandFailed, Device, DeviceOffline, hub
 from .telegram_auth import AuthError, validate_init_data
@@ -100,23 +102,24 @@ class ModelRequest(BaseModel):
     model: str = Field(min_length=1, max_length=128)
 
 
-async def _run_chat(session: str, text: str) -> dict:
+async def _run_chat(session: str, text: str, source: str = "") -> dict:
     """Один ход диалога с сохранением истории на диск.
 
     Историю для модели собираем ДО записи новой реплики: ``llm.run_turn``
     сам добавляет в переданный список сообщение пользователя и ответ.
     """
     history = chat_history.llm_messages(session)
-    chat_history.append(session, "user", text)
+    chat_history.append(session, "user", text, source=source)
     try:
         outcome = await llm.run_turn(text, history)
     except Exception as exc:  # noqa: BLE001 - ошибку покажем в истории и вызывающему
-        chat_history.append(session, "system", f"ошибка: {exc}")
+        chat_history.append(session, "system", f"ошибка: {exc}", source=source)
         raise
     chat_history.append(
         session, "assistant", str(outcome.get("reply") or ""),
         executed=outcome.get("executed") or None,
         pending=outcome.get("pending") or None,
+        source=source,
     )
     return outcome
 
@@ -382,7 +385,7 @@ async def run_command(request: CommandRequest) -> dict:
 
 
 @app.post("/confirm/{token}", dependencies=[Depends(require_token)])
-async def confirm(token: str, session: str | None = None) -> dict:
+async def confirm(token: str, session: str | None = None, source: str = "web") -> dict:
     try:
         outcome = await llm.confirm(token)
     except ValueError as exc:
@@ -391,16 +394,22 @@ async def confirm(token: str, session: str | None = None) -> dict:
         raise HTTPException(400, str(exc)) from exc
     if session:
         reply = f"Готово: {outcome.get('action')} → {outcome.get('result')}"
-        chat_history.append(session, "user", f"подтверждаю {token}")
-        chat_history.append(session, "assistant", reply, executed=[outcome])
+        chat_history.append(session, "user", f"подтверждаю {token}", source=source)
+        chat_history.append(session, "assistant", reply, executed=[outcome], source=source)
     return {"status": "ok", **outcome}
 
 
 # ─────────────────────────── диалог с LLM ───────────────────────────
 
 
+@app.get("/session", dependencies=[Depends(require_token)])
+async def session_default() -> dict:
+    """Единая сессия для всех устройств: бот, мини-апп и браузер видят одну переписку."""
+    return {"session": canonical_session()}
+
+
 @app.post("/chat", dependencies=[Depends(require_token)])
-async def chat(request: ChatRequest) -> dict:
+async def chat(request: ChatRequest, source: str = "web") -> dict:
     text = request.message.strip()
     if not text:
         raise HTTPException(400, "пустое сообщение")
@@ -414,20 +423,21 @@ async def chat(request: ChatRequest) -> dict:
         except (DeviceOffline, CommandFailed) as exc:
             raise HTTPException(400, str(exc)) from exc
         reply = f"Готово: {outcome.get('action')} → {outcome.get('result')}"
-        chat_history.append(request.session, "user", text)
-        chat_history.append(request.session, "assistant", reply, executed=[outcome])
+        chat_history.append(request.session, "user", text, source=source)
+        chat_history.append(request.session, "assistant", reply,
+                            executed=[outcome], source=source)
         return {"reply": reply, "executed": [outcome], "pending": []}
 
     if text.lower() in {"отмена", "нет", "cancel"}:
         cleared = len(llm.confirmations.list())
         llm.confirmations._items.clear()
         reply = f"Отменено. Снято ожидающих подтверждений: {cleared}"
-        chat_history.append(request.session, "user", text)
-        chat_history.append(request.session, "assistant", reply)
+        chat_history.append(request.session, "user", text, source=source)
+        chat_history.append(request.session, "assistant", reply, source=source)
         return {"reply": reply, "executed": [], "pending": []}
 
     try:
-        return await _run_chat(request.session, text)
+        return await _run_chat(request.session, text, source)
     except llm.LLMNotConfigured as exc:
         raise HTTPException(500, str(exc)) from exc
     except RuntimeError as exc:
@@ -445,7 +455,9 @@ async def history_list(session: str = "default", limit: int = 200) -> dict:
 
 @app.get("/sessions", dependencies=[Depends(require_token)])
 async def sessions_list() -> dict:
-    return {"sessions": chat_history.sessions()}
+    return {"sessions": chat_history.sessions(),
+            "default": canonical_session(),
+            "note": "default — общая переписка для всех устройств"}
 
 
 @app.delete("/session/{session}", dependencies=[Depends(require_token)])
@@ -463,6 +475,7 @@ async def voice_input(
     file: UploadFile = File(...),
     chat: bool = False,
     session: str = "voice",
+    source: str = "web",
 ) -> dict:
     """Распознать аудио и, если chat=true, сразу выполнить как реплику в диалоге."""
     data = await file.read()
@@ -480,13 +493,65 @@ async def voice_input(
     result: dict = {"text": heard["text"], "engine": heard["engine"]}
     if chat and heard["text"]:
         try:
-            turn = await _run_chat(session, heard["text"])
+            turn = await _run_chat(session, heard["text"], source)
         except llm.LLMNotConfigured as exc:
             raise HTTPException(500, str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(502, str(exc)) from exc
         result.update(turn)
     return result
+
+
+# ─────────────────────── изображения (скриншоты) ───────────────────────
+
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".heic"}
+
+
+@app.post("/image", dependencies=[Depends(require_token)])
+async def image_input(
+    file: UploadFile = File(...),
+    message: str = "",
+    session: str = "image",
+    chat: bool = True,
+    source: str = "web",
+) -> dict:
+    """Распознать присланный скриншот и (chat=true) ответить как в диалоге.
+
+    Бесплатная модель со зрением читает картинку и отдаёт текстовое описание,
+    которое попадает в обычный диалог — так ассистент «видит» скриншоты ошибок.
+    """
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "пустой файл")
+
+    uploads = DATA_DIR / "uploads"
+    uploads.mkdir(parents=True, exist_ok=True)
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in IMAGE_SUFFIXES:
+        suffix = ".png"
+    path = uploads / f"{int(time.time())}_{secrets.token_hex(4)}{suffix}"
+    path.write_bytes(data)
+
+    caption = (message or "").strip()
+    try:
+        description = await planner.describe_image(path, caption)
+    except RuntimeError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+    block = ("[Пользователь прислал скриншот. Вот что на нём распознано:\n"
+             f"{description}]")
+    text = f"{caption}\n\n{block}" if caption else block
+
+    if not chat:
+        return {"status": "ok", "text": description, "file": str(path)}
+
+    try:
+        turn = await _run_chat(session, text, source)
+    except llm.LLMNotConfigured as exc:
+        raise HTTPException(500, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    return {**turn, "text": description}
 
 
 # ─────────────────────────── приём агентов ───────────────────────────

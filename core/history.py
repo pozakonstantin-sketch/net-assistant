@@ -104,9 +104,16 @@ def entries(session: str, limit: int | None = None) -> list[dict]:
 
 
 def append(session: str, role: str, text: str,
-           executed: list | None = None, pending: list | None = None) -> dict:
-    """Добавить реплику и вернуть её в том же виде, в каком она хранится."""
+           executed: list | None = None, pending: list | None = None,
+           source: str = "") -> dict:
+    """Добавить реплику и вернуть её в том же виде, в каком она хранится.
+
+    ``source`` — откуда пришла реплика (tg, web, ...): по нему бот понимает,
+    какие сообщения уже видел пользователь в Telegram, а какие надо переслать.
+    """
     item: dict = {"role": role, "text": _clip(text), "ts": time.time()}
+    if source:
+        item["source"] = source
     if executed:
         item["executed"] = _shrink(executed)
     if pending:

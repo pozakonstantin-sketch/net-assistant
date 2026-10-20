@@ -50,6 +50,8 @@ class Settings:
     opencode_agent: str = os.getenv("OPENCODE_AGENT", "")
     opencode_timeout: float = float(os.getenv("OPENCODE_TIMEOUT", "150"))
     opencode_dir: str = os.getenv("OPENCODE_DIR", "")
+    # Модель со зрением для скриншотов/фото из Telegram (OpenCode, бесплатная).
+    vision_model: str = os.getenv("VISION_MODEL", "opencode/nemotron-3.5-super-vl-free")
 
     require_confirm: bool = _bool("REQUIRE_CONFIRM", True)
     allowed_devices: tuple[str, ...] = tuple(_csv("ALLOWED_DEVICES"))
@@ -84,5 +86,18 @@ class Settings:
     # HTTPS-адрес панели для мини-приложения (например, https://host.tailnet.ts.net)
     telegram_webapp_url: str = os.getenv("TELEGRAM_WEBAPP_URL", "").strip().rstrip("/")
 
+    # Единая переписка для панели и бота. Пусто — берём чат владельца из
+    # TELEGRAM_ALLOWED_CHAT_IDS (tg-<id>), иначе «main».
+    chat_session: str = os.getenv("CHAT_SESSION", "").strip()
+
 
 settings = Settings()
+
+
+def canonical_session() -> str:
+    """Сессия, которую используют все устройства (бот, мини-апп, браузер)."""
+    if settings.chat_session:
+        return settings.chat_session
+    if settings.telegram_chats:
+        return f"tg-{settings.telegram_chats[0]}"
+    return "main"

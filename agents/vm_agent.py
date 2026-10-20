@@ -225,26 +225,103 @@ def vm_windows(_args: dict) -> dict:
 
     dpy = _display()
     root = dpy.screen().root
-    windows = []
-    for window in root.query_tree().children:
+
+    def name_of(window) -> str:
         try:
-            attrs = window.get_attributes()
-            if attrs.map_state != X.IsViewable:
-                continue
             name = window.get_wm_name()
-            if not name:
+        except Exception:  # noqa: BLE001
+            name = None
+        if not name:
+            try:
+                prop = window.get_full_property(dpy.intern_atom("_NET_WM_NAME"), 0)
+                if prop and prop.value:
+                    name = prop.value
+                    if isinstance(name, bytes):
+                        name = name.decode("utf-8", "ignore")
+            except Exception:  # noqa: BLE001
+                name = None
+        return str(name).strip() if name else ""
+
+    # Сначала пробуем EWMH-список клиентов: он не зависит от переподчинения окон.
+    ids: list[int] = []
+    try:
+        prop = root.get_full_property(dpy.intern_atom("_NET_CLIENT_LIST"), X.AnyPropertyType)
+        if prop:
+            ids = list(prop.value)
+    except Exception:  # noqa: BLE001
+        ids = []
+
+    windows = []
+    if ids:
+        for wid in ids:
+            try:
+                window = dpy.create_resource_object("window", wid)
+                attrs = window.get_attributes()
+                if attrs.map_state != X.IsViewable:
+                    continue
+                name = name_of(window)
+                if not name:
+                    continue
+                geometry = window.get_geometry()
+                position = window.translate_coords(root, 0, 0)
+                windows.append({
+                    "name": name[:120],
+                    "x": position.x,
+                    "y": position.y,
+                    "width": geometry.width,
+                    "height": geometry.height,
+                    "active": bool(attrs.map_state == X.IsViewable),
+                })
+            except Exception:  # noqa: BLE001 - окно могло исчезнуть
                 continue
-            geometry = window.get_geometry()
-            windows.append({
-                "name": str(name)[:120],
-                "x": geometry.x,
-                "y": geometry.y,
-                "width": geometry.width,
-                "height": geometry.height,
-            })
-        except Exception:  # noqa: BLE001 - окно могло исчезнуть
-            continue
+
+    # Запасной путь: обходим дерево окон (без EWMH).
+    if not windows:
+        stack = [root]
+        while stack:
+            node = stack.pop()
+            try:
+                children = node.query_tree().children
+            except Exception:  # noqa: BLE001
+                continue
+            for child in children:
+                stack.append(child)
+                try:
+                    attrs = child.get_attributes()
+                    if attrs.map_state != X.IsViewable:
+                        continue
+                    geometry = child.get_geometry()
+                    if geometry.width < 50 or geometry.height < 50:
+                        continue
+                    name = name_of(child)
+                    if not name or name == "fly-wm":
+                        continue
+                    position = child.translate_coords(root, 0, 0)
+                    windows.append({
+                        "name": name[:120],
+                        "x": position.x,
+                        "y": position.y,
+                        "width": geometry.width,
+                        "height": geometry.height,
+                    })
+                except Exception:  # noqa: BLE001
+                    continue
+
     return {"count": len(windows), "windows": windows[:30]}
+
+
+def vm_panel(_args: dict) -> dict:
+    """Открыть панель ассистента в браузере ВМ с токеном (без ввода пароля)."""
+    from core.config import settings
+
+    url = f"http://127.0.0.1:8787/?token={settings.token}"
+    subprocess.Popen(
+        ["xdg-open", url],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    return {"opened": "панель ассистента", "url": "http://127.0.0.1:8787/"}
 
 
 def vm_open(args: dict) -> dict:
@@ -275,6 +352,7 @@ HANDLERS = {
     "vm.key": vm_key,
     "vm.windows": vm_windows,
     "vm.open": vm_open,
+    "vm.panel": vm_panel,
 }
 
 

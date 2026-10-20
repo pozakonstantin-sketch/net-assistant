@@ -328,6 +328,12 @@ CATALOG: dict[str, dict[str, Any]] = {
         "devices": [VM],
         "args": {"target": {"type": "str", "required": True, "max_len": 512}},
     },
+    "vm.panel": {
+        "desc": ("Открыть панель ассистента в браузере ВМ. Токен подставляется "
+                 "сам — вводить ничего не нужно."),
+        "devices": [VM],
+        "args": {},
+    },
     "vm.move": {
         "desc": "Навести курсор на рабочем столе ВМ (без клика).",
         "devices": [VM],

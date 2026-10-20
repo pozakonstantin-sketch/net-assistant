@@ -1,0 +1,17 @@
+[Unit]
+Description=localhost.run tunnel for net-assistant panel
+After=network-online.target net-assistant-core.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=assistant
+Group=assistant
+ExecStart=/usr/local/bin/tunnel-lhr.sh
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

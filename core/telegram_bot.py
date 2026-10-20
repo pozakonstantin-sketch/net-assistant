@@ -20,6 +20,8 @@ import asyncio
 import html
 import json
 import logging
+import os
+import re
 from pathlib import Path
 
 import httpx
@@ -120,9 +122,38 @@ def _split(text: str) -> list[str]:
     return chunks
 
 
+TUNNEL_LOG = Path(os.getenv("TUNNEL_LOG", str(DATA_DIR / "cloudflared.log")))
+TUNNEL_URL_FILE = Path(os.getenv("TUNNEL_URL_FILE", str(DATA_DIR / "tunnel_url.txt")))
+_TUNNEL_RE = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
+
+
+def tunnel_url() -> str:
+    """Текущий адрес туннеля: файл от сервиса туннеля, затем лог cloudflared."""
+    try:
+        url = TUNNEL_URL_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        url = ""
+    if url.startswith("https://"):
+        return url.rstrip("/")
+    try:
+        size = TUNNEL_LOG.stat().st_size
+        with TUNNEL_LOG.open("rb") as fh:
+            fh.seek(max(0, size - 64_000))
+            raw = fh.read().decode("utf-8", "ignore")
+    except OSError:
+        return ""
+    found = _TUNNEL_RE.findall(raw)
+    return found[-1] if found else ""
+
+
+def webapp_url() -> str:
+    """Адрес мини-приложения: адрес туннеля важнее значения из .env."""
+    return tunnel_url() or settings.telegram_webapp_url
+
+
 def panel_row() -> list[list[dict]]:
-    """Кнопка «открыть панель» — если настроен HTTPS-адрес мини-приложения."""
-    url = settings.telegram_webapp_url
+    """Кнопка «открыть панель» — если известен HTTPS-адрес мини-приложения."""
+    url = webapp_url()
     if not url:
         return []
     return [[{"text": "🌐 Открыть панель", "web_app": {"url": url}}]]
@@ -436,9 +467,9 @@ class Telegram:
 
     # ─────────────────────── мини-приложение ───────────────────────
 
-    async def set_menu_button(self) -> None:
+    async def set_menu_button(self, url: str | None = None) -> None:
         """Кнопка «Панель» у поля ввода — открывает мини-приложение."""
-        url = settings.telegram_webapp_url
+        url = (url or webapp_url()).rstrip("/")
         if not url:
             return
         try:
@@ -557,6 +588,20 @@ class Telegram:
                     log.info("sync → Telegram: ответ ассистента для другого устройства")
                     await self.send(chat_id, _esc(text))
 
+    # ─────────────────────── адрес мини-приложения ───────────────────────
+
+    async def tunnel_loop(self) -> None:
+        """Следить за адресом туннеля: он меняется при переподключении."""
+        last = webapp_url()
+        while True:
+            await asyncio.sleep(15)
+            url = webapp_url()
+            if url and url != last:
+                if last:
+                    log.info("адрес панели изменился: %s → %s", last, url)
+                await self.set_menu_button(url)
+                last = url
+
     async def run(self) -> None:
         if not self.token:
             raise SystemExit("не задан TELEGRAM_BOT_TOKEN в .env")
@@ -565,9 +610,9 @@ class Telegram:
         if not _allowed():
             log.warning("TELEGRAM_ALLOWED_CHAT_IDS пуст — бот отвечает всем; "
                         "добавьте свой chat_id в .env")
-        if settings.telegram_webapp_url:
-            await self.set_menu_button()
+        await self.set_menu_button()
         await self.set_commands()
+        asyncio.create_task(self.tunnel_loop())
         log.info("бот @%s запущен, ядро: %s", name, self.core)
 
         owner = sorted(_allowed())

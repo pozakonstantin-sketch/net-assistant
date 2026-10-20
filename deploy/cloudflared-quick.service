@@ -1,0 +1,18 @@
+[Unit]
+Description=Cloudflare quick tunnel for net-assistant panel
+After=network-online.target net-assistant-core.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=assistant
+Group=assistant
+# QUIC в домашних сетях часто режут — HTTP/2 надёжнее.
+ExecStart=/usr/local/bin/cloudflared tunnel --no-autoupdate --protocol http2 --loglevel info --logfile /opt/net-assistant/data/cloudflared.log --url http://127.0.0.1:8787
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

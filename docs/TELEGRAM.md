@@ -124,48 +124,64 @@ Telegram  ──►  api.telegram.org  ──►  ВМ: core.telegram_bot  ─�
 Эндпоинт ядра — `POST /image` (multipart: `file`, query: `message`, `session`,
 `chat`, `source`).
 
-Telegram требует **HTTPS** для мини-приложения, поэтому панель публикуется
-через Tailscale Serve — сертификат Let's Encrypt выдаётся автоматически.
+Telegram требует **HTTPS** для мини-приложения. Панель публикуется через
+исходящий туннель: входящие порты не нужны, домашний IP в интернет не
+выставляется.
 
-### Где запускать Serve
+### Туннель localhost.run (без аккаунта)
 
-По умолчанию Serve работает **на ВМ**: там же, где ядро, поэтому проксирование
-локальное, без лишних хопов, а за соединением `tailscaled` следит
-`tailscale-watchdog.timer`.
+Сервис `tunnel-lhr.service` держит SSH-туннель до `localhost.run` и пишет
+текущий адрес в `data/tunnel_url.txt`. Бот читает этот файл и ставит кнопку
+**«Панель»**; если туннель переподключился и адрес сменился, кнопка
+обновляется сама в течение 15 секунд.
 
 ```bash
-# на ВМ (ядро слушает 127.0.0.1:8787)
+# из каталога репозитория на ВМ
+sudo install -m 755 deploy/tunnel-lhr.sh /usr/local/bin/tunnel-lhr.sh
+sudo install -m 644 deploy/tunnel-lhr.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now tunnel-lhr.service
+
+cat /opt/net-assistant/data/tunnel_url.txt      # текущий адрес
+curl -sS "$(cat /opt/net-assistant/data/tunnel_url.txt)/health"
+```
+
+Адрес вида `https://xxxxxxxxxxxx.lhr.life` меняется при каждом переподключении
+(бесплатный тариф без аккаунта). Для мини-приложения это не проблема: бот
+обновляет кнопку, а уже отправленные сообщения сохраняют старую ссылку.
+
+### Cloudflare quick tunnel (альтернатива)
+
+`deploy/cloudflared-quick.service` — туннель Cloudflare без аккаунта
+(`https://<слова>.trycloudflare.com`). Адрес бот берёт из лога
+`data/cloudflared.log`, но при авариях Cloudflare edge отдаёт 530/1033.
+Переключение:
+
+```bash
+sudo systemctl disable --now tunnel-lhr.service
+sudo systemctl enable --now cloudflared-quick.service
+```
+
+### Tailscale Serve и Funnel
+
+Serve работает только **внутри tailnet** — удобно для браузера на своих
+устройствах, но мини-приложение на телефоне без VPN так не открыть.
+
+```bash
 sudo tailscale serve --bg --https=443 http://127.0.0.1:8787
-sudo tailscale serve status
 ```
 
-Если `tailscaled` в ВМ начнёт терять управляющее соединение (домашняя сеть
-рвёт долгие TCP-сессии), Serve можно переставить на ПК и проксировать на ядро
-по локальной сети:
+Funnel формально делает адрес публичным, но публичный DNS Tailscale не выдавал
+запись (NXDOMAIN у авторитетных NS `ts.net`, баги tailscale#21502/#21829),
+поэтому для мини-приложения он не подошёл.
 
-```
-Telegram → https://desktop-isuob1d.taile4385b.ts.net → http://192.168.1.161:8787 (ядро в ВМ)
-```
+`TELEGRAM_WEBAPP_URL` в `.env` остаётся запасным адресом: бот использует его,
+только если файла туннеля нет.
 
-```powershell
-# на ПК (Windows):
-tailscale serve --bg --yes --https=443 http://192.168.1.161:8787
-tailscale serve status
-```
-
-Нужны две галочки в админке Tailscale (один раз на весь tailnet):
-
-1. **Serve** — `https://login.tailscale.com/f/serve?node=<узел>`
-2. **HTTPS Certificates** — `https://login.tailscale.com/admin/dns`
-
-Адрес для `.env` — DNS-имя того узла, где запущен Serve:
-
-```env
-TELEGRAM_WEBAPP_URL=https://astra-hub.taile4385b.ts.net
-```
-
-После перезапуска бот сам ставит кнопку **«Панель»** у поля ввода
-(`setChatMenuButton`), а в `/help` появляется кнопка **🌐 Открыть панель**.
+> Туннель делает панель доступной из интернета. Защита — токен ассистента
+> (для мини-приложения ещё и подпись Telegram), но `/shots` (скриншоты)
+> отдаётся без авторизации: ссылки содержат случайный суффикс, однако при
+> публичном адресе это остаётся риском.
 
 ### Вход без пароля
 
@@ -195,9 +211,9 @@ TELEGRAM_WEBAPP_URL=https://astra-hub.taile4385b.ts.net
 
 Вне Telegram панель спрашивает **токен ассистента** (`ASSISTANT_TOKEN` из
 `.env`). Он сохраняется в localStorage браузера — вводить нужно один раз.
-Сессия браузера отдельная (`web-<id>`), поэтому переписка в веб-панели не
-смешивается с перепиской бота; сменить сессию или стереть её можно в разделе
-**Ещё** («Очистить историю», «Токен доступа»).
+Браузер работает в той же общей сессии, что бот и мини-приложение
+(`canonical_session`), поэтому переписка синхронизируется; стереть её можно в
+разделе **Ещё** («Очистить историю»).
 
 ## Обслуживание
 

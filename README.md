@@ -105,6 +105,17 @@ sudo /opt/net-assistant/deploy/setup_vm_desktop.sh
 доступ к рабочему столу. Панель можно открыть сразу с токеном:
 `https://<адрес-ядра>/?token=<ТОКЕН>` — ссылка запоминается в браузере.
 
+### Резервные копии
+
+Раз в сутки (03:30) служба `net-assistant-backup.timer` складывает в
+`/var/backups/net-assistant/` архив с `.env`, перепиской, журналом, каталогом
+`deploy` и `Caddyfile`. Кэши (venv, озвучка, снимки) не архивируются.
+Хранятся последние 14 копий. Запустить вручную:
+
+```bash
+sudo /opt/net-assistant/deploy/backup.sh
+```
+
 ## Структура
 
 ```

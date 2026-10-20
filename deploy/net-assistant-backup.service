@@ -1,0 +1,6 @@
+[Unit]
+Description=Net Assistant — архив настроек и переписки
+
+[Service]
+Type=oneshot
+ExecStart=/opt/net-assistant/deploy/backup.sh

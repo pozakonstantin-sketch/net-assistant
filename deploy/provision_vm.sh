@@ -88,6 +88,9 @@ install -m 644 "$INSTALL_DIR/deploy/net-assistant-core.service" /etc/systemd/sys
 install -m 644 "$INSTALL_DIR/deploy/net-assistant-router.service" /etc/systemd/system/
 install -m 644 "$INSTALL_DIR/deploy/net-assistant-telegram.service" /etc/systemd/system/
 install -m 644 "$INSTALL_DIR/deploy/net-assistant-fake@.service" /etc/systemd/system/
+install -m 644 "$INSTALL_DIR/deploy/net-assistant-backup.service" /etc/systemd/system/
+install -m 644 "$INSTALL_DIR/deploy/net-assistant-backup.timer" /etc/systemd/system/
+install -m 755 "$INSTALL_DIR/deploy/backup.sh" /usr/local/bin/net-assistant-backup.sh
 install -m 644 "$INSTALL_DIR/deploy/tailscale-watchdog.service" /etc/systemd/system/
 install -m 644 "$INSTALL_DIR/deploy/tailscale-watchdog.timer" /etc/systemd/system/
 install -m 755 "$INSTALL_DIR/deploy/tailscale_watchdog.py" /usr/local/bin/tailscale_watchdog.py
@@ -119,6 +122,10 @@ fi
 echo "== Рабочий стол ВМ (ИИ видит экран) =="
 install -m 755 "$INSTALL_DIR/deploy/setup_vm_desktop.sh" /usr/local/bin/setup_vm_desktop.sh
 "$INSTALL_DIR/deploy/setup_vm_desktop.sh" || echo "Агент рабочего стола не включён — повторите: sudo $INSTALL_DIR/deploy/setup_vm_desktop.sh"
+
+echo "== Резервные копии =="
+chmod +x "$INSTALL_DIR/deploy/backup.sh"
+systemctl enable --now net-assistant-backup.timer
 
 echo "== Сторож tailscaled =="
 if command -v tailscale >/dev/null 2>&1; then

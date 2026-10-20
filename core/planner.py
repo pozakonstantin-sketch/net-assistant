@@ -215,7 +215,18 @@ VISION_PROMPT = """Посмотри на изображение и опиши е
    Glob и прочее."""
 
 
-async def describe_image(path: Path, hint: str = "") -> str:
+UI_PROMPT = """Это снимок экрана компьютера с интерфейсом программы.
+
+Опиши по-русски, что открыто и что можно нажать:
+1. Назови активное окно и его содержимое.
+2. Перечисли видимые кнопки, поля ввода, ссылки, пункты меню — для каждого
+   укажи примерные координаты центра в пикселях: (x=..., y=...) от левого
+   верхнего угла изображения. Координаты оценивай по сетке изображения.
+3. Если видно поле ввода — скажи, что в нём написано.
+4. Не вызывай инструменты и не предлагай код. Только текст."""
+
+
+async def describe_image(path: Path, hint: str = "", prompt: str | None = None) -> str:
     """Распознать скриншот/фото моделью со зрением и вернуть описание."""
     binary = binary_path()
     if binary is None:
@@ -223,7 +234,7 @@ async def describe_image(path: Path, hint: str = "") -> str:
             "не найден CLI opencode — распознавание изображений недоступно"
         )
 
-    prompt = VISION_PROMPT
+    prompt = prompt or VISION_PROMPT
     if hint:
         prompt += f"\n\nПодпись пользователя к изображению: {hint}"
 
@@ -403,6 +414,18 @@ async def run_turn(user_text: str, history: list[dict]) -> dict:
 
             try:
                 result = await hub.dispatch(device, action, args)
+                # Снимок экрана ВМ сразу распознаём моделью зрения: планировщик
+                # получает текстовое описание с координатами и может нажимать.
+                if action == "vm.screenshot" and isinstance(result, dict) and result.get("file"):
+                    try:
+                        result = dict(result)
+                        result["description"] = await describe_image(
+                            Path(result["file"]), prompt=UI_PROMPT
+                        )
+                    except (RuntimeError, OSError) as exc:
+                        log.warning("описание снимка ВМ не получено: %s", exc)
+                        result = dict(result)
+                        result["description_error"] = str(exc)
                 observations.append({"ok": True, "device": device, "action": action,
                                      "result": _trim(result)})
                 executed.append({"device": device, "action": action, "args": args,

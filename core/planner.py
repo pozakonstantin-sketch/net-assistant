@@ -24,7 +24,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from . import catalog, models
+from . import catalog, models, ui_map
 from .audit import audit
 from .config import DATA_DIR, settings
 from .hub import CommandFailed, DeviceOffline, hub
@@ -451,6 +451,12 @@ async def run_turn(user_text: str, history: list[dict]) -> dict:
                             )
                         finally:
                             gridded.unlink(missing_ok=True)
+                        hints = ui_map.as_text()
+                        if hints:
+                            result["description"] += (
+                                "\n\nТочные координаты элементов панели (из браузера, "
+                                "нажимай по ним):\n" + hints
+                            )
                     except (RuntimeError, OSError) as exc:
                         log.warning("описание снимка ВМ не получено: %s", exc)
                         result = dict(result)

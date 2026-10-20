@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 
 from . import catalog
 from . import history as chat_history
-from . import llm, models, planner, tts, voice
+from . import llm, models, planner, tts, ui_map, voice
 from .audit import audit
 from .config import BASE_DIR, DATA_DIR, canonical_session, settings
 from .files import SHOTS_DIR
@@ -302,6 +302,19 @@ async def devices() -> dict:
             for d in hub.devices.values()
         ]
     }
+
+
+@app.post("/ui/map", dependencies=[Depends(require_token)])
+async def ui_map_store(payload: dict) -> dict:
+    """Панель присылает координаты своих кнопок — подсказка для ИИ."""
+    ui_map.store(payload)
+    return {"ok": True, "targets": len(ui_map.MAP.get("targets", []))}
+
+
+@app.get("/ui/map", dependencies=[Depends(require_token)])
+async def ui_map_get() -> dict:
+    return ui_map.current() or {}
+
 
 
 @app.get("/actions", dependencies=[Depends(require_token)])

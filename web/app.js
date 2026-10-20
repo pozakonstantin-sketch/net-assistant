@@ -272,10 +272,50 @@ function showScreen(name, options = {}) {
   if (name === 'devices') renderDevices();
   if (name === 'activity') refreshMeta();
   if (name === 'more') updateModelLabel();
+  reportUiMap();
 }
 
-function updateAppbar() {
-  const config = SCREENS[state.screen] || SCREENS.chat;
+/* Координаты кнопок для агента ВМ: он нажимает точно, а не «на глаз».
+   Панель присылает их ядру, планировщик добавляет к описанию снимка. */
+let uiMapTimer = null;
+
+function reportUiMap() {
+  if (!state.token) return;
+  clearTimeout(uiMapTimer);
+  uiMapTimer = setTimeout(() => {
+    try {
+      const nodes = $$('.nav-item, .screen.active button, .screen.active .device-card, '
+        + '.screen.active a, .screen.active input, .screen.active textarea');
+      const chromeX = window.screenX + Math.max(0, (window.outerWidth - window.innerWidth) / 2);
+      const chromeY = window.screenY + Math.max(0, window.outerHeight - window.innerHeight);
+      const targets = [];
+      nodes.forEach((node) => {
+        const rect = node.getBoundingClientRect();
+        if (rect.width < 4 || rect.height < 4) return;
+        const label = (node.getAttribute('aria-label') || node.innerText
+          || node.placeholder || node.title || '').trim().split('\n')[0].slice(0, 60);
+        if (!label) return;
+        targets.push({
+          label,
+          x: Math.round(chromeX + rect.left + rect.width / 2),
+          y: Math.round(chromeY + rect.top + rect.height / 2),
+        });
+      });
+      fetch('/ui/map', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${state.token}` },
+        body: JSON.stringify({
+          screen: state.screen,
+          width: window.innerWidth,
+          height: window.innerHeight,
+          targets: targets.slice(0, 120),
+        }),
+      }).catch(() => {});
+    } catch { /* noop */ }
+  }, 400);
+}
+
+function updateAppbar() {  const config = SCREENS[state.screen] || SCREENS.chat;
   $('#screen-title').textContent = config.title;
   const button = $('#appbar-action');
   if (!config.icon) {
@@ -356,6 +396,7 @@ function renderDevices() {
     box.append(card);
   }
   renderSideDevices();
+  reportUiMap();
 }
 
 function renderSideDevices() {
@@ -1043,6 +1084,8 @@ window.addEventListener('hashchange', () => {
   const name = initialScreen();
   if (name !== state.screen) showScreen(name, { silent: true });
 });
+
+window.addEventListener('resize', reportUiMap);
 
 $('#send').onclick = () => {
   const input = $('#message');

@@ -156,6 +156,7 @@ docs/VM_SETUP.md      лаборатория в виртуальной маши�
 docs/PHONE_SETUP.md   телефон: Termux-агент и дашборд как приложение
 docs/OPENCODE_PLANNER.md  бесплатные модели OpenCode как планировщик
 docs/TELEGRAM.md      бот: пульт к ядру из Telegram
+docs/TAILSCALE_EXIT_NODE.md  exit node на роутере: причина «нет интернета»
 ```
 
 ## Быстрый старт (Windows, локально)

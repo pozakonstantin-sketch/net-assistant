@@ -96,6 +96,18 @@ class Settings:
     # TELEGRAM_ALLOWED_CHAT_IDS (tg-<id>), иначе «main».
     chat_session: str = os.getenv("CHAT_SESSION", "").strip()
 
+    # Присланные файлы: оригиналы уходят на SSD роутера по SFTP, локально
+    # остаётся кэш и извлечённый текст для планировщика.
+    router_host: str = os.getenv("ROUTER_HOST", "").strip()
+    router_port: int = int(os.getenv("ROUTER_PORT", "22"))
+    router_user: str = os.getenv("ROUTER_USER", "").strip()
+    router_password: str = os.getenv("ROUTER_PASSWORD", "")
+    router_key_path: str = os.getenv("ROUTER_KEY_PATH", "").strip()
+    router_files_dir: str = os.getenv(
+        "ROUTER_FILES_DIR", "/mnt/sda/net-assistant/files"
+    ).strip().rstrip("/")
+    files_max_mb: int = int(os.getenv("FILES_MAX_MB", "50"))
+
 
 settings = Settings()
 

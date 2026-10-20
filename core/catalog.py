@@ -8,7 +8,7 @@
     desc        — описание для LLM (что делает команда);
     args        — схема аргументов (см. core.protocol.validate_args);
     dangerous   — требуют подтверждения пользователя;
-    devices     — на каких типах устройств доступна (pc/android/router).
+    devices     — на каких типах устройств доступна (pc/android/router/vm/core).
 """
 
 from __future__ import annotations
@@ -22,6 +22,8 @@ ANDROID_ADB = "android-adb"
 ROUTER = "router"
 # рабочий стол Astra Linux внутри ВМ: скриншоты, клики, ввод
 VM = "vm-desktop"
+# само ядро: локальные действия с файлами пользователя (без агента)
+CORE = "core"
 
 CATALOG: dict[str, dict[str, Any]] = {
     # ───────────────────────────── ПК (Windows) ─────────────────────────────
@@ -403,6 +405,33 @@ CATALOG: dict[str, dict[str, Any]] = {
         "devices": [ROUTER],
         "dangerous": True,
         "args": {},
+    },
+
+    # ─────────────── Файлы пользователя (ядро, SSD роутера) ───────────────
+    "file.list": {
+        "desc": ("Список присланных пользователем файлов: id, имя, тип, размер, "
+                 " дата, путь на SSD роутера. Используй, если нужно вспомнить файл."),
+        "devices": [CORE],
+        "args": {"limit": {"type": "int", "default": 15, "min": 1, "max": 100}},
+    },
+    "file.read": {
+        "desc": ("Прочитать извлечённый текст присланного файла по id (или имени). "
+                 "Для длинных файлов листай через offset/limit."),
+        "devices": [CORE],
+        "args": {
+            "id": {"type": "str", "required": True, "max_len": 64},
+            "offset": {"type": "int", "default": 0, "min": 0},
+            "limit": {"type": "int", "default": 8000, "min": 1, "max": 20000},
+        },
+    },
+    "file.search": {
+        "desc": ("Найти строку во всех присланных файлах. Вернёт id, имя и фрагмент "
+                 "текста вокруг совпадения."),
+        "devices": [CORE],
+        "args": {
+            "query": {"type": "str", "required": True, "max_len": 200},
+            "limit": {"type": "int", "default": 10, "min": 1, "max": 50},
+        },
     },
 }
 

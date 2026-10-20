@@ -48,6 +48,10 @@ HELP = """<b>Ассистент</b> — ПК, телефон и роутер. П
 /reset — очистить контекст диалога
 /help — эта справка
 
+<b>Файлы</b>
+Пришлите Word, Excel, PDF или текст — сохраню оригинал на SSD роутера
+и разберу содержимое: перескажу, найду данные, отвечу на вопросы.
+
 <b>ПК</b>
 • «Какой процессор и сколько памяти?»
 • «Сделай скриншот»
@@ -370,6 +374,77 @@ class Telegram:
                             reply_to=message_id)
         await self.reply(chat_id, data, reply_to=message_id)
 
+    async def on_document(self, chat_id: int, document: dict, caption: str,
+                          message_id: int) -> None:
+        """Файл (Word, Excel, PDF…): оригинал на SSD роутера, ответ по содержимому."""
+        await self.typing(chat_id)
+        name = document.get("file_name") or "file"
+        size = int(document.get("file_size") or 0)
+        if size > 20 * 1024 * 1024:
+            await self.send(
+                chat_id,
+                f"⚠️ Telegram отдаёт боту файлы до 20 МБ, а «{_esc(name)}» — "
+                f"{size / 1048576:.1f} МБ. Пришлите файл меньше или загрузите его в панели.",
+                reply_to=message_id,
+            )
+            return
+        try:
+            info = await self.api("getFile", {"file_id": document["file_id"]})
+            remote = info["result"]["file_path"]
+            response = await self.client.get(f"{API}/file/bot{self.token}/{remote}")
+            response.raise_for_status()
+        except Exception as exc:  # noqa: BLE001
+            await self.send(chat_id, f"⚠️ Не смог скачать файл: {_esc(exc)}",
+                            reply_to=message_id)
+            return
+
+        headers = {"Authorization": f"Bearer {self.session_token}"}
+        files = {"file": (name, response.content,
+                          response.headers.get("content-type", "application/octet-stream"))}
+        params = {"chat": "true", "session": self.session_for(chat_id),
+                  "message": caption or "", "source": "tg"}
+        try:
+            core = await self.client.post(f"{self.core}/file", headers=headers,
+                                          params=params, files=files, timeout=300)
+        except Exception as exc:  # noqa: BLE001
+            await self.send(chat_id, f"⚠️ Файл не обработан: {_esc(exc)}",
+                            reply_to=message_id)
+            return
+
+        if core.status_code >= 400:
+            detail = core.text[:300]
+            try:
+                detail = core.json().get("detail", detail)
+            except Exception:  # noqa: BLE001
+                pass
+            await self.send(chat_id, f"⚠️ Не удалось принять файл: {_esc(detail)}",
+                            reply_to=message_id)
+            return
+
+        data = core.json()
+        entry = data.get("file") or {}
+        if entry.get("router_path"):
+            where = f"💾 SSD роутера: <code>{_esc(entry['router_path'])}</code>"
+        else:
+            where = ("💾 Сохранено только на ВМ: SSD роутера недоступен "
+                     f"({_esc(entry.get('router_error') or 'нет связи')})")
+
+        details = []
+        if entry.get("kind"):
+            details.append(_esc(entry["kind"]))
+        if entry.get("size_text"):
+            details.append(_esc(entry["size_text"]))
+        if entry.get("chars"):
+            details.append(f"{entry['chars']} знаков")
+        head = f"📄 <b>{_esc(entry.get('name') or name)}</b>"
+        if details:
+            head += " — " + ", ".join(details)
+        if entry.get("extract_error"):
+            head += f"\n⚠️ Текст не извлечён: {_esc(entry['extract_error'])}"
+        await self.send(chat_id, f"{head}\n{where}", reply_to=message_id)
+
+        await self.reply(chat_id, data, reply_to=None)
+
     async def on_command(self, chat_id: int, text: str) -> None:
         command = text.split()[0].lower().lstrip("/")
         if command in {"start", "help"}:
@@ -624,6 +699,10 @@ class Telegram:
             if message.get("photo"):
                 await self.guard(chat_id, message_id, lambda: self.on_photo(
                     chat_id, message["photo"], message.get("caption") or "", message_id))
+                return
+            if message.get("document"):
+                await self.guard(chat_id, message_id, lambda: self.on_document(
+                    chat_id, message["document"], message.get("caption") or "", message_id))
                 return
             if not text:
                 return

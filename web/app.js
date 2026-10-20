@@ -939,6 +939,57 @@ async function sendVoice(blob) {
   }
 }
 
+async function sendFile(file) {
+  if (!file || state.busy) return;
+  const limit = 50 * 1024 * 1024;
+  if (file.size > limit) {
+    appendMessage('system', `Файл больше 50 МБ: ${file.name}`);
+    scrollBottom(true);
+    return;
+  }
+  state.busy = true;
+  updateSend();
+  haptic('medium');
+
+  const input = $('#message');
+  const caption = input ? input.value.trim() : '';
+  if (input) { input.value = ''; autoGrow(); }
+
+  appendMessage('user', caption ? `📎 ${file.name}\n${caption}` : `📎 ${file.name}`);
+  scrollBottom(true);
+  const typing = appendTyping();
+
+  try {
+    const form = new FormData();
+    form.append('file', file, file.name);
+    const params = new URLSearchParams({
+      chat: 'true', source: chatSource(), session: state.session, message: caption,
+    });
+    const result = await api(`/file?${params.toString()}`, { method: 'POST', body: form });
+    typing.remove();
+    const info = result.file || {};
+    const where = info.router_path
+      ? `💾 SSD роутера: ${info.router_path}`
+      : `💾 Локально на ВМ (SSD роутера недоступен: ${info.router_error || 'нет связи'})`;
+    appendMessage('system', `📄 ${info.name || file.name}\n${where}`);
+    appendMessage('assistant', result.reply || '(пустой ответ)',
+      result.executed, result.pending, Date.now() / 1000);
+    scrollBottom();
+    if (result.pending && result.pending.length) refreshMeta();
+    if (state.voice && result.reply) speak(result.reply);
+  } catch (error) {
+    typing.remove();
+    if (error.message !== 'unauthorized') {
+      appendMessage('system', `Файл: ${error.message}`);
+      scrollBottom(true);
+    }
+  } finally {
+    state.busy = false;
+    updateSend();
+    refreshMeta().catch(() => {});
+  }
+}
+
 /* ─────────────────────────── модели ─────────────────────────── */
 
 async function loadModels() {
@@ -1107,6 +1158,22 @@ $('#message').addEventListener('keydown', (event) => {
 });
 
 $('#mic').onclick = toggleRecording;
+
+$('#attach').onclick = () => { haptic(); $('#file-input').click(); };
+$('#file-input').onchange = (event) => {
+  const file = event.target.files && event.target.files[0];
+  event.target.value = '';
+  if (file) sendFile(file);
+};
+const dropZone = $('#messages');
+if (dropZone) {
+  dropZone.addEventListener('dragover', (event) => event.preventDefault());
+  dropZone.addEventListener('drop', (event) => {
+    event.preventDefault();
+    const file = event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files[0];
+    if (file) sendFile(file);
+  });
+}
 
 $('#sheet-close').onclick = closeSheet;
 $('#scrim').onclick = closeSheet;

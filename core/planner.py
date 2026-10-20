@@ -24,7 +24,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from . import catalog, models, ui_map
+from . import catalog, documents, models, ui_map
 from .audit import audit
 from .config import DATA_DIR, settings
 from .hub import CommandFailed, DeviceOffline, hub
@@ -144,9 +144,9 @@ def _self_text() -> str:
 
 def _devices_text() -> str:
     devices = hub.online_devices()
-    if not devices:
-        return "(нет устройств онлайн)"
-    return "\n".join(f"- {d.device_id} — {d.name} ({d.platform})" for d in devices)
+    lines = [f"- {d.device_id} — {d.name} ({d.platform})" for d in devices]
+    lines.append("- core — ядро ассистента (присланные файлы на SSD роутера)")
+    return "\n".join(lines) if lines else "(нет устройств онлайн)"
 
 
 def _actions_text() -> str:
@@ -184,6 +184,7 @@ def _base_prompt() -> str:
         f"О тебе:\n{_self_text()}\n\n"
         f"Устройства:\n{_devices_text()}\n\n"
         f"Действия:\n{_actions_text()}\n\n"
+        f"Файлы пользователя:\n{documents.prompt_hint()}\n\n"
     )
 
 

@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import catalog
+from . import catalog, documents
 from .audit import audit
 from .config import settings
 from .files import attach_artifacts
@@ -88,6 +88,9 @@ class Hub:
     async def dispatch(self, device_id: str, action: str, args: Any,
                        timeout: float | None = None) -> dict:
         """Проверить команду, отправить агенту и дождаться результата."""
+        if device_id == catalog.CORE:
+            return await self._local(action, args)
+
         device = self.resolve(device_id)
 
         entry = catalog.get(action)
@@ -134,6 +137,23 @@ class Hub:
         if future and not future.done():
             future.set_result(message)
 
+    async def _local(self, action: str, args: Any) -> dict:
+        """Действия самого ядра (файлы пользователя), без агента и сети."""
+        entry = catalog.get(action)
+        if entry is None or catalog.CORE not in entry.get("devices", []):
+            raise ValueError(f"команда «{action}» не разрешена каталогом")
+        clean_args = validate_args(entry["args"], args)
+        audit.write(event="command", device=catalog.CORE, action=action, args=clean_args)
+        started = time.perf_counter()
+        try:
+            result = await asyncio.to_thread(documents.core_action, action, clean_args)
+        except documents.FileError as exc:
+            audit.write(event="error", device=catalog.CORE, action=action, error=str(exc))
+            raise ValueError(str(exc)) from exc
+        audit.write(event="result", device=catalog.CORE, action=action, ok=True,
+                    duration_ms=int((time.perf_counter() - started) * 1000))
+        return result
+
     def mark_seen(self, device_id: str) -> None:
         device = self.devices.get(device_id)
         if device:
@@ -147,25 +167,31 @@ class Hub:
         tools: list[dict] = []
         for device in self.online_devices():
             for action in catalog.for_device(device.platform, device.actions, full_access=full):
-                entry = catalog.CATALOG[action]
-                properties = {
-                    name: {"type": rule.get("type", "str") if rule.get("type") != "list" else "array",
-                           "description": rule.get("description", "")}
-                    for name, rule in entry["args"].items()
-                }
-                tools.append({
-                    "type": "function",
-                    "function": {
-                        "name": f"{device.device_id}::{action}",
-                        "description": f"[{device.name}] {catalog.describe(action)}",
-                        "parameters": {
-                            "type": "object",
-                            "properties": properties,
-                            "required": [n for n, r in entry["args"].items() if r.get("required")],
-                        },
-                    },
-                })
+                tools.append(self._tool(device.device_id, device.name, action))
+        for action in catalog.for_device(catalog.CORE):
+            tools.append(self._tool(catalog.CORE, "ядро (файлы)", action))
         return tools
+
+    @staticmethod
+    def _tool(device_id: str, device_name: str, action: str) -> dict:
+        entry = catalog.CATALOG[action]
+        properties = {
+            name: {"type": rule.get("type", "str") if rule.get("type") != "list" else "array",
+                   "description": rule.get("description", "")}
+            for name, rule in entry["args"].items()
+        }
+        return {
+            "type": "function",
+            "function": {
+                "name": f"{device_id}::{action}",
+                "description": f"[{device_name}] {catalog.describe(action)}",
+                "parameters": {
+                    "type": "object",
+                    "properties": properties,
+                    "required": [n for n, r in entry["args"].items() if r.get("required")],
+                },
+            },
+        }
 
 
 hub = Hub()

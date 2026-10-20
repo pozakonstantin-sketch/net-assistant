@@ -157,6 +157,7 @@ docs/PHONE_SETUP.md   телефон: Termux-агент и дашборд как
 docs/OPENCODE_PLANNER.md  бесплатные модели OpenCode как планировщик
 docs/TELEGRAM.md      бот: пульт к ядру из Telegram
 docs/TAILSCALE_EXIT_NODE.md  exit node на роутере: причина «нет интернета»
+docs/FILES.md        присланные Word/Excel/PDF: SSD роутера и разбор для ИИ
 ```
 
 ## Быстрый старт (Windows, локально)

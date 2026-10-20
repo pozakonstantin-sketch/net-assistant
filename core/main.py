@@ -23,6 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import catalog
+from . import documents
 from . import history as chat_history
 from . import llm, models, planner, tts, ui_map, voice
 from .audit import audit
@@ -102,14 +103,18 @@ class ModelRequest(BaseModel):
     model: str = Field(min_length=1, max_length=128)
 
 
-async def _run_chat(session: str, text: str, source: str = "") -> dict:
+async def _run_chat(session: str, text: str, source: str = "",
+                    display_text: str | None = None) -> dict:
     """Один ход диалога с сохранением истории на диск.
 
     Историю для модели собираем ДО записи новой реплики: ``llm.run_turn``
     сам добавляет в переданный список сообщение пользователя и ответ.
+
+    ``display_text`` — короткая версия реплики для истории и панели, когда
+    в модель уходит длинный текст (например, содержимое присланного файла).
     """
     history = chat_history.llm_messages(session)
-    chat_history.append(session, "user", text, source=source)
+    chat_history.append(session, "user", display_text or text, source=source)
     try:
         outcome = await llm.run_turn(text, history)
     except Exception as exc:  # noqa: BLE001 - ошибку покажем в истории и вызывающему
@@ -161,6 +166,7 @@ async def health() -> dict:
         "llm_backend": backend,
         "llm_model": models.current() if backend == "opencode" else settings.llm_model,
         "llm_configured": backend == "opencode" or bool(settings.llm_api_key),
+        "files": documents.storage_info(),
     }
 
 
@@ -596,6 +602,45 @@ async def image_input(
     except RuntimeError as exc:
         raise HTTPException(502, str(exc)) from exc
     return {**turn, "text": description}
+
+
+# ─────────────────── присланные файлы (Word, Excel, PDF) ───────────────────
+
+
+@app.post("/file", dependencies=[Depends(require_token)])
+async def file_input(
+    file: UploadFile = File(...),
+    message: str = "",
+    session: str = "files",
+    chat: bool = True,
+    source: str = "web",
+) -> dict:
+    """Сохранить присланный файл на SSD роутера и разобрать содержимое.
+
+    Оригинал уходит по SFTP в ``ROUTER_FILES_DIR`` на роутере, локально
+    остаётся кэш и извлечённый текст. При ``chat=true`` текст попадает
+    планировщику как реплика пользователя, ответ — в историю сессии.
+    """
+    data = await file.read()
+    try:
+        entry = await asyncio.to_thread(
+            documents.save, data, file.filename or "file", session, source, message
+        )
+    except documents.FileError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    block = documents.chat_block(entry, message)
+    if not chat:
+        return {"status": "ok", "file": entry, "text": entry.get("preview", "")}
+
+    try:
+        turn = await _run_chat(session, block, source,
+                               display_text=documents.display_text(entry, message))
+    except llm.LLMNotConfigured as exc:
+        raise HTTPException(500, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    return {**turn, "file": entry}
 
 
 # ─────────────────────────── приём агентов ───────────────────────────

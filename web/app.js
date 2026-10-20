@@ -114,6 +114,19 @@ async function api(path, options = {}) {
   return data;
 }
 
+async function apiBlob(path, options = {}) {
+  const headers = { ...(options.headers || {}), Authorization: `Bearer ${state.token}` };
+  if (options.body && !(options.body instanceof FormData)) {
+    headers['Content-Type'] = 'application/json';
+  }
+  const response = await fetch(path, { ...options, headers, cache: 'no-store' });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(data.detail || `HTTP ${response.status}`);
+  }
+  return response.blob();
+}
+
 /* ─────────────────────────── Telegram ─────────────────────────── */
 
 function initTelegram() {
@@ -781,12 +794,34 @@ function newChat() {
     });
 }
 
-function speak(text) {
-  if (!text || !window.speechSynthesis) return;
+let speechAudio = null;
+
+function speakFallback(text) {
+  if (!window.speechSynthesis) return;
   const utterance = new SpeechSynthesisUtterance(text);
   utterance.lang = 'ru-RU';
   window.speechSynthesis.cancel();
   window.speechSynthesis.speak(utterance);
+}
+
+async function speak(text) {
+  if (!text) return;
+  try {
+    if (speechAudio) {
+      speechAudio.pause();
+      speechAudio = null;
+    }
+    const blob = await apiBlob('/tts', { method: 'POST', body: JSON.stringify({ text }) });
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    speechAudio = audio;
+    audio.addEventListener('ended', () => URL.revokeObjectURL(url));
+    audio.addEventListener('error', () => URL.revokeObjectURL(url));
+    await audio.play();
+  } catch (error) {
+    // серверный синтез недоступен — читаем голосом устройства
+    speakFallback(text);
+  }
 }
 
 /* ─────────────────────────── голос ─────────────────────────── */

@@ -42,6 +42,7 @@ HELP = """<b>Ассистент</b> — ПК, телефон и роутер. П
 /models — выбрать модель ИИ кнопками
 /model ИМЯ — переключить сразу, например
 <code>/model opencode/mimo-v2.6-flash-free</code>
+/voice — голосовые ответы (вкл/выкл)
 /pending — что ждёт подтверждения
 /panel — открыть панель
 /reset — очистить контекст диалога
@@ -85,6 +86,13 @@ def _esc(value: object) -> str:
     return html.escape(str(value), quote=False)
 
 
+def _plain(value: object) -> str:
+    """Текст без разметки — для синтеза речи."""
+    text = re.sub(r"<[^>]+>", " ", str(value))
+    text = re.sub(r"[*_`~#]+", " ", text)
+    return re.sub(r"\s+", " ", html.unescape(text)).strip()
+
+
 def _format_action(outcome: dict) -> str:
     """Человекочитаемый итог подтверждённого действия — без сырого словаря."""
     action = str(outcome.get("action") or "действие")
@@ -124,6 +132,7 @@ def _split(text: str) -> list[str]:
 
 TUNNEL_LOG = Path(os.getenv("TUNNEL_LOG", str(DATA_DIR / "cloudflared.log")))
 TUNNEL_URL_FILE = Path(os.getenv("TUNNEL_URL_FILE", str(DATA_DIR / "tunnel_url.txt")))
+VOICE_STATE = Path(os.getenv("VOICE_STATE", str(DATA_DIR / "voice_chats.json")))
 _TUNNEL_RE = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
 
 
@@ -207,6 +216,28 @@ class Telegram:
             await self.api("sendPhoto", {"chat_id": chat_id, "caption": caption[:900]},
                            files={"photo": (path.name, handle, "image/png")})
 
+    async def send_voice(self, chat_id: int, audio: bytes, caption: str = "",
+                         keyboard: list | None = None, reply_to: int | None = None) -> None:
+        """Голосовое сообщение (OGG/Opus); текст ответа — подписью, если влезает."""
+        payload: dict = {"chat_id": chat_id}
+        if caption:
+            payload["caption"] = caption[:1024]
+            payload["parse_mode"] = "HTML"
+        if keyboard:
+            # с файлами Telegram ждёт reply_markup строкой JSON
+            payload["reply_markup"] = json.dumps({"inline_keyboard": keyboard})
+        if reply_to:
+            payload["reply_to_message_id"] = reply_to
+        files = {"voice": ("reply.ogg", audio, "audio/ogg")}
+        try:
+            await self.api("sendVoice", payload, files=files)
+        except RuntimeError as exc:
+            log.warning("%s", exc)
+            payload.pop("parse_mode", None)
+            if caption:
+                payload["caption"] = _plain(caption)[:1024]
+            await self.api("sendVoice", payload, files=files)
+
     async def typing(self, chat_id: int) -> None:
         try:
             await self.api("sendChatAction", {"chat_id": chat_id, "action": "typing"})
@@ -218,6 +249,56 @@ class Telegram:
     def session_for(self, chat_id: int) -> str:
         """Сессия диалога: одна для всех устройств (бот, мини-апп, браузер)."""
         return canonical_session()
+
+    # ── озвучка ──
+
+    def voice_enabled(self, chat_id: int) -> bool:
+        """Озвучка включена, пока пользователь явно не выключил её."""
+        try:
+            data = json.loads(VOICE_STATE.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return True
+        except (OSError, ValueError):
+            return True
+        return bool(data.get(str(chat_id), True))
+
+    def set_voice(self, chat_id: int, enabled: bool) -> None:
+        try:
+            data = json.loads(VOICE_STATE.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                data = {}
+        except (OSError, ValueError):
+            data = {}
+        data[str(chat_id)] = enabled
+        VOICE_STATE.parent.mkdir(parents=True, exist_ok=True)
+        VOICE_STATE.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    async def voice_for(self, chat_id: int, text: str) -> bytes | None:
+        """Синтезировать ответ ядром; None — если озвучка выключена или не вышло."""
+        if not self.voice_enabled(chat_id):
+            return None
+        plain = _plain(text)
+        if not plain:
+            return None
+        try:
+            return await self.core_bytes("POST", "/tts", {"text": plain})
+        except RuntimeError as exc:
+            log.warning("озвучка недоступна: %s", exc)
+            return None
+
+    async def core_bytes(self, method: str, path: str, payload: dict | None = None) -> bytes:
+        headers = {"Authorization": f"Bearer {self.session_token}"}
+        response = await self.client.request(method, f"{self.core}{path}",
+                                             json=payload, headers=headers, timeout=120)
+        if response.status_code >= 400:
+            detail = response.text[:300]
+            try:
+                detail = response.json().get("detail", detail)
+            except Exception:  # noqa: BLE001
+                pass
+            raise RuntimeError(str(detail))
+        return response.content
+
 
     async def core_call(self, method: str, path: str, payload: dict | None = None) -> dict:
         headers = {"Authorization": f"Bearer {self.session_token}"}
@@ -300,6 +381,22 @@ class Telegram:
             await self.models(chat_id, parts[1].strip() if len(parts) > 1 else "")
         elif command == "pending":
             await self.pending(chat_id)
+        elif command == "voice":
+            parts = text.split(None, 1)
+            argument = parts[1].strip().lower() if len(parts) > 1 else ""
+            if argument in {"on", "вкл", "включить", "да", "1"}:
+                self.set_voice(chat_id, True)
+            elif argument in {"off", "выкл", "выключить", "нет", "0"}:
+                self.set_voice(chat_id, False)
+            enabled = self.voice_enabled(chat_id)
+            await self.send(
+                chat_id,
+                ("🔊 Озвучка включена: ответы приходят голосовым сообщением "
+                 "мужским голосом (Дмитрий)." if enabled else
+                 "🔇 Озвучка выключена: только текст."),
+                keyboard=[[{"text": "🔇 Выключить" if enabled else "🔊 Включить",
+                            "callback_data": "voice:off" if enabled else "voice:on"}]],
+            )
         elif command == "reset":
             await self.core_call("DELETE", f"/session/{self.session_for(chat_id)}")
             await self.send(chat_id, "🧹 Контекст диалога очищен.")
@@ -383,8 +480,8 @@ class Telegram:
             names = ", ".join(f"{item.get('device')}::{item.get('action')}" for item in done)
             text += f"\n\n✅ <code>{_esc(names)}</code>"
 
-        await self.send(chat_id, text, keyboard=self.keyboard(pending) if pending else None,
-                        reply_to=reply_to)
+        keyboard = self.keyboard(pending) if pending else None
+        await self.send(chat_id, text, keyboard=keyboard, reply_to=reply_to)
 
         for item in executed:
             result = item.get("result") if isinstance(item.get("result"), dict) else {}
@@ -392,6 +489,11 @@ class Telegram:
             if url and str(url).startswith("/shots/"):
                 await self.send_photo(chat_id, DATA_DIR / "shots" / Path(str(url)).name,
                                       caption=f"{item.get('device')}::{item.get('action')}")
+
+        # Озвучка — после текста: ответ не ждёт синтеза (он идёт ~2–5 секунд).
+        audio = await self.voice_for(chat_id, text)
+        if audio:
+            await self.send_voice(chat_id, audio, reply_to=reply_to)
 
     @staticmethod
     def keyboard(pending: list) -> list:
@@ -424,6 +526,14 @@ class Telegram:
                 await self.api("answerCallbackQuery",
                                {"callback_query_id": callback_id, "text": "Переключаю"})
                 await self.models(chat_id, data.split(":", 1)[1])
+            elif data.startswith("voice:"):
+                enabled = data.split(":", 1)[1] == "on"
+                self.set_voice(chat_id, enabled)
+                await self.api("answerCallbackQuery",
+                               {"callback_query_id": callback_id,
+                                "text": "Включено" if enabled else "Выключено"})
+                await self.send(chat_id, "🔊 Озвучка включена." if enabled
+                                else "🔇 Озвучка выключена.")
             elif data.startswith("cancel:"):
                 await self.core_call("POST", "/chat",
                                      {"message": "отмена", "session": self.session_for(chat_id)})
@@ -489,6 +599,7 @@ class Telegram:
             {"command": "models", "description": "Выбрать модель ИИ"},
             {"command": "model", "description": "Переключить модель: /model имя"},
             {"command": "pending", "description": "Ожидающие подтверждения"},
+            {"command": "voice", "description": "Озвучка ответов голосом"},
             {"command": "reset", "description": "Очистить контекст диалога"},
             {"command": "panel", "description": "Открыть панель"},
         ]

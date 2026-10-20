@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 
 from . import catalog
 from . import history as chat_history
-from . import llm, models, planner, voice
+from . import llm, models, planner, tts, voice
 from .audit import audit
 from .config import BASE_DIR, DATA_DIR, canonical_session, settings
 from .files import SHOTS_DIR
@@ -156,6 +156,8 @@ async def health() -> dict:
         "status": "ok",
         "devices_online": len(hub.online_devices()),
         "stt_engine": voice.engine(),
+        "tts_engine": settings.tts_engine if tts.enabled() else "none",
+        "tts_voice": tts.resolve_voice() if tts.enabled() else "",
         "llm_backend": backend,
         "llm_model": models.current() if backend == "opencode" else settings.llm_model,
         "llm_configured": backend == "opencode" or bool(settings.llm_api_key),
@@ -500,6 +502,35 @@ async def voice_input(
             raise HTTPException(502, str(exc)) from exc
         result.update(turn)
     return result
+
+
+# ───────────────────────── озвучка ответов ─────────────────────────
+
+
+class TtsRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=2000)
+    voice: str | None = None
+
+
+@app.get("/tts", dependencies=[Depends(require_token)])
+async def tts_info() -> dict:
+    """Текущий голос и доступные варианты."""
+    return tts.info()
+
+
+@app.post("/tts", dependencies=[Depends(require_token)])
+async def tts_speak(request: TtsRequest) -> FileResponse:
+    """Синтезировать текст в OGG/Opus (голосовое сообщение / плеер в панели)."""
+    try:
+        path = await tts.synthesize(request.text, request.voice)
+    except tts.TTSNotConfigured as exc:
+        raise HTTPException(503, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except tts.TTSError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    return FileResponse(path, media_type="audio/ogg", filename="reply.ogg",
+                        headers={"Cache-Control": "private, max-age=86400"})
 
 
 # ─────────────────────── изображения (скриншоты) ───────────────────────

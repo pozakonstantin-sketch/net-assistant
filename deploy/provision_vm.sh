@@ -79,6 +79,10 @@ else
 fi
 chown -R "$SERVICE_USER":"$SERVICE_USER" "$INSTALL_DIR"
 
+echo "== ffmpeg (озвучка) =="
+install -m 755 "$INSTALL_DIR/deploy/install_ffmpeg.sh" /usr/local/bin/install_ffmpeg.sh
+/usr/local/bin/install_ffmpeg.sh || echo "ffmpeg не установлен — озвучка будет недоступна"
+
 echo "== systemd =="
 install -m 644 "$INSTALL_DIR/deploy/net-assistant-core.service" /etc/systemd/system/
 install -m 644 "$INSTALL_DIR/deploy/net-assistant-router.service" /etc/systemd/system/

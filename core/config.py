@@ -74,6 +74,12 @@ class Settings:
     stt_language: str = os.getenv("STT_LANGUAGE", "ru")
     stt_max_mb: int = int(os.getenv("STT_MAX_MB", "20"))
 
+    # Синтез речи (ответы бота и панели голосом). engine: edge | off
+    tts_engine: str = os.getenv("TTS_ENGINE", "edge").strip().lower()
+    tts_voice: str = os.getenv("TTS_VOICE", "ru-RU-DmitryNeural")
+    tts_rate: str = os.getenv("TTS_RATE", "-4%")
+    tts_max_chars: int = int(os.getenv("TTS_MAX_CHARS", "900"))
+
     command_timeout: float = float(os.getenv("COMMAND_TIMEOUT", "30"))
     audit_path: Path = DATA_DIR / "audit.jsonl"
 

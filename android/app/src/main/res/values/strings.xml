@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Net Assistant</string>
+    <string name="tagline">Умный дом под рукой</string>
+    <string name="login_title">Net Assistant</string>
+    <string name="login_subtitle">ПК, телефон и роутер — в одном приложении</string>
+    <string name="server_hint">Адрес сервера</string>
+    <string name="token_hint">Токен доступа</string>
+    <string name="login_button">Войти</string>
+    <string name="login_help">Токен — это ASSISTANT_TOKEN из файла .env на ВМ. Дома достаточно Wi-Fi, снаружи — Tailscale.</string>
+    <string name="tab_chat">Чат</string>
+    <string name="tab_commands">Команды</string>
+    <string name="tab_devices">Устройства</string>
+    <string name="tab_audit">Журнал</string>
+    <string name="tab_more">Ещё</string>
+    <string name="chat_title">Чат с ИИ</string>
+    <string name="chat_subtitle">Одна переписка на всех устройствах</string>
+    <string name="commands_title">Прямые команды</string>
+    <string name="commands_subtitle">Одно нажатие — и готово</string>
+    <string name="devices_title">Устройства</string>
+    <string name="devices_subtitle">Кто на связи прямо сейчас</string>
+    <string name="audit_title">Журнал</string>
+    <string name="audit_subtitle">Что делал ассистент</string>
+    <string name="more_title">Ещё</string>
+    <string name="more_subtitle">Модель, голос и файлы</string>
+    <string name="input_hint">Сообщение…</string>
+    <string name="send">Отправить</string>
+    <string name="attach">Прикрепить файл</string>
+    <string name="voice">Голосовое сообщение</string>
+    <string name="empty_chat">Напишите первое сообщение — ассистент ответит и сможет управлять устройствами.</string>
+    <string name="empty_devices">Пока нет подключённых устройств</string>
+    <string name="empty_audit">Журнал пока пуст</string>
+    <string name="empty_files">Файлов ещё нет. Пришлите документ в чат — он сохранится на SSD роутера.</string>
+    <string name="files_title">Файлы на SSD</string>
+    <string name="confirm">Подтвердить</string>
+    <string name="cancel">Отмена</string>
+    <string name="run">Выполнить</string>
+    <string name="close">Закрыть</string>
+    <string name="refresh">Обновить</string>
+    <string name="voice_on">Запись… нажмите ещё раз, чтобы отправить</string>
+    <string name="voice_off">Голосовое распознаётся локально на ВМ</string>
+</resources>

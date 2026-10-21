@@ -465,28 +465,33 @@ def prompt_hint(limit: int = 5) -> str:
     return "\n".join(lines)
 
 
+def list_files(limit: int = 50) -> dict:
+    """Публичный список присланных файлов для API и мобильного приложения."""
+    limit = max(1, min(int(limit or 50), 200))
+    items = entries()[-limit:][::-1]
+    return {
+        "count": len(entries()),
+        "files": [
+            {
+                "id": item.get("id"),
+                "name": item.get("name"),
+                "kind": item.get("kind"),
+                "size": item.get("size_text"),
+                "chars": item.get("chars"),
+                "uploaded": time.strftime("%Y-%m-%d %H:%M",
+                                          time.localtime(item.get("uploaded") or 0)),
+                "router_path": item.get("router_path") or "",
+                "preview": item.get("preview") or "",
+            }
+            for item in items
+        ],
+    }
+
+
 def core_action(action: str, args: dict) -> dict:
     """Локальные действия ядра: file.list / file.read / file.search."""
     if action == "file.list":
-        limit = max(1, min(int(args.get("limit") or 15), 100))
-        items = entries()[-limit:][::-1]
-        return {
-            "count": len(entries()),
-            "files": [
-                {
-                    "id": item.get("id"),
-                    "name": item.get("name"),
-                    "kind": item.get("kind"),
-                    "size": item.get("size_text"),
-                    "chars": item.get("chars"),
-                    "uploaded": time.strftime("%Y-%m-%d %H:%M",
-                                              time.localtime(item.get("uploaded") or 0)),
-                    "router_path": item.get("router_path") or "",
-                    "preview": item.get("preview") or "",
-                }
-                for item in items
-            ],
-        }
+        return list_files(int(args.get("limit") or 15))
 
     if action == "file.read":
         item = find(str(args.get("id") or ""))

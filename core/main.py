@@ -643,6 +643,14 @@ async def file_input(
     return {**turn, "file": entry}
 
 
+@app.get("/files", dependencies=[Depends(require_token)])
+async def files_list(limit: int = 50) -> dict:
+    """Список присланных файлов для панели и мобильного приложения."""
+    data = documents.list_files(limit)
+    data["storage"] = documents.storage_info()
+    return data
+
+
 # ─────────────────────────── приём агентов ───────────────────────────
 
 

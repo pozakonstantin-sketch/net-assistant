@@ -1,0 +1,14 @@
+#!/bin/sh /etc/rc.common
+# Re-apply the Tailscale exit-node fix after tachyon rebuilds its nft rules.
+START=99
+STOP=10
+USE_PROCD=1
+
+start_service() {
+	procd_open_instance
+	procd_set_param command /bin/sh -c 'while true; do /usr/local/sbin/tachyon-tailnet-fix.sh; sleep 15; done'
+	procd_set_param respawn 3600 5 0
+	procd_set_param stdout 0
+	procd_set_param stderr 0
+	procd_close_instance
+}

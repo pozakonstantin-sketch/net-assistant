@@ -4,81 +4,114 @@
 tailnet: он анонсирует `0.0.0.0/0`, `::/0` и подсеть `192.168.1.0/24`.
 ВМ `astra-hub` exit node не анонсирует и маршруты не принимает.
 
-## Симптом
+## Симптомы
 
-На телефоне включаешь exit node `openwrt` — интернет пропадает. При этом
-DNS на телефон приходит (запросы к `192.168.1.1` идут через туннель и роутер
-их обслуживает), а сайты не открываются.
+1. На телефоне включён exit node `openwrt`, интернет вроде есть (Google
+   открывается, `api.ipify.org` показывает `185.170.54.59`), но **сайты,
+   которые на роутере идут через VPN (tachyon), не открываются**.
+2. Или интернет пропадает полностью — это отдельная проблема с зонами
+   firewall, см. раздел «Зоны firewall».
 
-## Причина
+## Причина №1: tachyon исключает трафик из tailscale0
 
-На роутере оказалось **две зоны firewall для одного интерфейса
-`tailscale0`**:
+На роутере установлен **tachyon** (sing-box, режим tproxy) с fake-IP DNS
+`198.18.0.0/15`. В сгенерированной им цепочке `TachyonTable mangle` было
+правило:
 
-| Секция | Имя зоны | Что было |
-|---|---|---|
-| `@zone[2]` | `tailscale` | forwarding в `lan` и `wan` — правильная |
-| `tstz` | `ts` | только `input/output/forward ACCEPT`, **без forwarding** |
+```
+iifname "tailscale0" return
+```
 
-fw4 отправлял трафик с `tailscale0` в зону `ts`, её цепочка `forward_ts`
-принимала только трафик **в** tailscale, а дальше срабатывал
-`handle_reject` — роутер отвечал `Destination Port Unreachable`.
-Поэтому работал только доступ к самому роутеру (DNS), но не выход в интернет.
+Оно стояло **до** правил маркировки, поэтому весь трафик, приходящий из
+exit-node, полностью выходил из проксирования и уходил напрямую в WAN.
+Заблокированные сайты, естественно, не открывались.
+
+## Причина №2: DNS телефона не попадал в tachyon
+
+LAN-клиенты получают от dnsmasq fake-IP (`youtube.com -> 198.18.0.120`) и
+потом идут на этот адрес — tachyon его перехватывает. Телефон же через
+exit node использовал DNS мобильного оператора и получал **реальные IP**.
+Маршрутизация по IP в tachyon не работала (набор `tachyon_subnets` пуст),
+а fake-IP не появлялся — трафик шёл напрямую и блокировался.
+
+Штатный механизм tachyon `dns_redirect` для этого не годится: набор
+`tachyon_dns_sources` пуст, а правило редиректа указывает на порт `1603`,
+который sing-box не слушает.
 
 ## Исправление (выполнено)
 
+На роутере создан идемпотентный скрипт
+`/usr/local/sbin/tachyon-tailnet-fix.sh`:
+
+1. удаляет из `inet TachyonTable` цепочки `mangle` правило
+   `iifname "tailscale0" return` (защита tailnet `100.64.0.0/10` и локальных
+   подсетей остаётся);
+2. добавляет в цепочку `dns_redirect` два правила DNAT для DNS-запросов,
+   приходящих из `tailscale0`, на dnsmasq роутера:
+
 ```sh
-uci add firewall forwarding
-uci set firewall.@forwarding[-1].src='ts'
-uci set firewall.@forwarding[-1].dest='wan'
-
-uci add firewall forwarding
-uci set firewall.@forwarding[-1].src='ts'
-uci set firewall.@forwarding[-1].dest='lan'
-
-uci commit firewall
-fw4 reload
+nft add rule inet TachyonTable dns_redirect iifname tailscale0 udp dport 53 \
+    counter dnat ip to 192.168.1.1:53
+nft add rule inet TachyonTable dns_redirect iifname tailscale0 tcp dport 53 \
+    counter dnat ip to 192.168.1.1:53
 ```
 
-После этого цепочка выглядит так:
+dnsmasq уже слушает `100.68.176.36:53`, форвардит на `127.0.0.42`
+(sing-box DNS) и возвращает fake-IP.
 
-```
-chain forward_ts {
-    jump accept_to_wan  # Accept ts to wan forwarding
-    jump accept_to_lan  # Accept ts to lan forwarding
-    jump accept_to_ts
-}
-```
+Так как tachyon пересобирает свои nft-правила при каждом reload, скрипт
+запускается демоном:
+
+`/etc/init.d/tachyon-tailnet-fix` (procd, `S99`), внутри цикл
+`fix; sleep 15`. Включён в автозапуск. После перезапуска tachyon правила
+восстанавливаются максимум за 15 секунд.
+
+Код: `deploy/tachyon-tailnet-fix.sh`,
+`deploy/tachyon-tailnet-fix.init`.
 
 ## Проверка
 
-Проверять удобно с ВМ, не трогая телефон:
+На роутере:
 
 ```sh
-sudo tailscale set --exit-node=100.68.176.36 --exit-node-allow-lan-access=false
-ping -c 2 8.8.8.8
-curl -s https://ifconfig.me          # внешний IP роутера
-getent hosts ya.ru                   # DNS через exit node
-sudo tailscale set --exit-node=      # вернуть как было
+nft list chain inet TachyonTable mangle | head -8
+# не должно быть строки iifname "tailscale0" return
+
+nft list chain inet TachyonTable dns_redirect | tail -3
+# должны быть два правила dnat ip to 192.168.1.1:53
 ```
 
-Ожидаемо: ping проходит, `ifconfig.me` отдаёт публичный IP роутера
-(`185.170.54.59`), DNS отвечает.
-
-## Диагностика
+С ВМ (тот же путь, что у телефона). Важно: `tailscale up` требует указывать
+все нестандартные флаги, иначе молча падает с ошибкой:
 
 ```sh
-/opt/net-assistant/.venv/bin/python tools/router_tailscale_diag.py
+sudo tailscale up --exit-node=100.68.176.36 --exit-node-allow-lan-access \
+     --accept-dns=false --hostname=astra-hub --operator=assistant
+ip route get 8.8.8.8        # должен идти через tailscale0, table 52
+curl -s -o /dev/null -w '%{http_code}\n' https://www.youtube.com   # 200
+sudo tailscale set --exit-node=
 ```
 
-Скрипт только читает настройки: версию, статус, prefs, адреса, маршруты,
-`ip_forward`, зоны и forwarding-правила firewall, цепочку `forward_ts`,
-проверку интернета и DNS с роутера.
+С телефона (ADB):
 
-## Если снова пропадёт интернет на телефоне
+```sh
+adb shell ping -c 1 youtube.com     # должен показать 198.18.0.120
+adb shell curl -s -m 15 -o /dev/null -w '%{http_code}\n' https://youtube.com
+```
 
-1. Выключить и снова включить exit node (или перезапустить Tailscale на телефоне).
-2. Проверить, что в админке Tailscale exit node `openwrt` по-прежнему одобрен.
-3. Запустить диагностику выше и посмотреть `forward_ts` и `ip_forward`.
-4. Убедиться, что после обновления прошивки не появилась третья зона для
-   `tailscale0` (в `uci show firewall` у всех зон должен быть forwarding в `wan`).
+Ожидаемо: `200`, внешний IP `185.170.54.59`.
+
+## Зоны firewall (старая проблема)
+
+Если интернет через exit node пропадает полностью, проверить зоны: на
+роутере была вторая зона `ts` для `tailscale0` без forwarding в `wan`.
+Лечится добавлением forwarding `ts -> wan` и `ts -> lan` и `fw4 reload`.
+
+## Если снова перестанет работать
+
+1. `ps w | grep tachyon-tailnet` — демон должен быть запущен.
+2. `/usr/local/sbin/tachyon-tailnet-fix.sh` — выполнить вручную.
+3. Проверить, что после обновления tachyon не изменились имена цепочек
+   (`nft list tables`, `TachyonTable`).
+4. После обновления прошивки проверить, что в `/etc/rc.d` есть
+   `S99tachyon-tailnet-fix`, а скрипт на месте.

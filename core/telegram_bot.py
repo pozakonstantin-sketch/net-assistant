@@ -180,7 +180,7 @@ class Telegram:
         self.token = settings.telegram_token
         self.core = settings.telegram_core_url
         self.session_token = settings.token
-        self.client = httpx.AsyncClient(timeout=POLL_TIMEOUT + 20)
+        self.client = httpx.AsyncClient(timeout=httpx.Timeout(240.0, connect=10.0))
         # Сколько реплик сессии бот уже показал/переслал в Telegram.
         self.seen: dict[str, int] = {}
 
@@ -304,18 +304,40 @@ class Telegram:
         return response.content
 
 
-    async def core_call(self, method: str, path: str, payload: dict | None = None) -> dict:
+    async def core_call(self, method: str, path: str, payload: dict | None = None,
+                        retries: int = 3) -> dict:
         headers = {"Authorization": f"Bearer {self.session_token}"}
-        response = await self.client.request(method, f"{self.core}{path}",
-                                             json=payload, headers=headers)
-        if response.status_code >= 400:
-            detail = response.text[:300]
+        last_error: Exception | None = None
+        for attempt in range(retries):
             try:
-                detail = response.json().get("detail", detail)
-            except Exception:  # noqa: BLE001
-                pass
-            raise RuntimeError(str(detail))
-        return response.json()
+                response = await self.client.request(
+                    method, f"{self.core}{path}", json=payload, headers=headers
+                )
+                if response.status_code in {502, 503} and attempt < retries - 1:
+                    log.warning("ядро ответило %s — повтор через %d с",
+                                response.status_code, 2 * (attempt + 1))
+                    await asyncio.sleep(2 * (attempt + 1))
+                    continue
+                if response.status_code >= 400:
+                    detail = response.text[:300]
+                    try:
+                        detail = response.json().get("detail", detail)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    raise RuntimeError(str(detail))
+                return response.json()
+            except (httpx.ConnectError, httpx.ConnectTimeout,
+                    httpx.RemoteProtocolError) as exc:
+                last_error = exc
+                if attempt < retries - 1:
+                    log.warning("ядро недоступно (%s) — повтор через %d с",
+                                exc, 2 * (attempt + 1))
+                    await asyncio.sleep(2 * (attempt + 1))
+                    continue
+                raise RuntimeError(
+                    "ядро временно недоступно — попробуйте ещё раз через минуту"
+                ) from exc
+        raise RuntimeError(str(last_error or "ядро недоступно"))
 
     # ─────────────────────────── обработка ───────────────────────────
 
@@ -765,7 +787,7 @@ class Telegram:
                 if ts <= last_ts:
                     continue
                 last_ts = max(last_ts, ts)
-                if item.get("source") == "tg":
+                if item.get("source") in {"tg", "schedule"}:
                     continue
                 text = str(item.get("text") or "").strip()
                 if not text:

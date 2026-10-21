@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field
 from . import catalog
 from . import documents
 from . import history as chat_history
-from . import llm, models, planner, tts, ui_map, voice
+from . import llm, models, planner, scheduler, tts, ui_map, voice
 from .audit import audit
 from .config import BASE_DIR, DATA_DIR, canonical_session, settings
 from .files import SHOTS_DIR
@@ -46,11 +46,13 @@ CONFIRM_RE = re.compile(r"^\s*(?:подтверждаю|подтвердить|c
 async def lifespan(app: FastAPI):
     SHOTS_DIR.mkdir(parents=True, exist_ok=True)
     chat_history.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    scheduler_task = scheduler.start()
     log.info("ядро запущено: http://%s:%s (устройств в памяти: %d)",
              settings.host, settings.port, len(hub.devices))
     if settings.token in {"", "change-me"}:
         log.warning("ASSISTANT_TOKEN не задан — задайте его в .env, иначе агенты не подключатся")
     yield
+    await scheduler.stop(scheduler_task)
     log.info("ядро остановлено")
 
 
@@ -101,6 +103,14 @@ class TelegramAuthRequest(BaseModel):
 
 class ModelRequest(BaseModel):
     model: str = Field(min_length=1, max_length=128)
+
+
+class ScheduleRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=128)
+    time: str = Field(min_length=4, max_length=5)
+    kind: str = Field(default="router_report", max_length=32)
+    prompt: str = Field(default="", max_length=2000)
+    days: list[str] = Field(default_factory=list)
 
 
 async def _run_chat(session: str, text: str, source: str = "",
@@ -479,6 +489,51 @@ async def sessions_list() -> dict:
     return {"sessions": chat_history.sessions(),
             "default": canonical_session(),
             "note": "default — общая переписка для всех устройств"}
+
+
+# ─────────────────────────── расписание ───────────────────────────
+
+
+@app.get("/schedules", dependencies=[Depends(require_token)])
+async def schedules_list() -> dict:
+    return {"tasks": scheduler.list_tasks(), "timezone": scheduler.timezone_name()}
+
+
+@app.post("/schedules", dependencies=[Depends(require_token)])
+async def schedules_add(request: ScheduleRequest) -> dict:
+    try:
+        task = scheduler.add_task(
+            title=request.title,
+            time_str=request.time,
+            kind=request.kind,
+            prompt=request.prompt,
+            days=request.days,
+        )
+    except scheduler.ScheduleError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"status": "ok", "task": task}
+
+
+@app.delete("/schedules/{task_id}", dependencies=[Depends(require_token)])
+async def schedules_remove(task_id: str) -> dict:
+    try:
+        task = scheduler.remove_task(task_id)
+    except scheduler.ScheduleError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return {"status": "ok", "removed": task}
+
+
+@app.post("/schedules/{task_id}/run", dependencies=[Depends(require_token)])
+async def schedules_run(task_id: str, deliver: bool = False) -> dict:
+    try:
+        outcome = await scheduler.run_now(task_id, deliver=deliver)
+    except scheduler.ScheduleError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except (DeviceOffline, CommandFailed) as exc:
+        raise HTTPException(503, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    return {"status": "ok", **outcome}
 
 
 @app.delete("/session/{session}", dependencies=[Depends(require_token)])

@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import catalog, documents
+from . import catalog, documents, scheduler
 from .audit import audit
 from .config import settings
 from .files import attach_artifacts
@@ -145,11 +145,18 @@ class Hub:
         clean_args = validate_args(entry["args"], args)
         audit.write(event="command", device=catalog.CORE, action=action, args=clean_args)
         started = time.perf_counter()
-        try:
-            result = await asyncio.to_thread(documents.core_action, action, clean_args)
-        except documents.FileError as exc:
-            audit.write(event="error", device=catalog.CORE, action=action, error=str(exc))
-            raise ValueError(str(exc)) from exc
+        if action.startswith("schedule."):
+            try:
+                result = await scheduler.core_action(action, clean_args)
+            except scheduler.ScheduleError as exc:
+                audit.write(event="error", device=catalog.CORE, action=action, error=str(exc))
+                raise ValueError(str(exc)) from exc
+        else:
+            try:
+                result = await asyncio.to_thread(documents.core_action, action, clean_args)
+            except documents.FileError as exc:
+                audit.write(event="error", device=catalog.CORE, action=action, error=str(exc))
+                raise ValueError(str(exc)) from exc
         audit.write(event="result", device=catalog.CORE, action=action, ok=True,
                     duration_ms=int((time.perf_counter() - started) * 1000))
         return result

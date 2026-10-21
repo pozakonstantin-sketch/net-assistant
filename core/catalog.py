@@ -380,6 +380,13 @@ CATALOG: dict[str, dict[str, Any]] = {
     },
 
     # ───────────────────────────── Роутер ─────────────────────────────
+    "router.report": {
+        "desc": ("Полный отчёт о состоянии роутера: uptime, нагрузка, память, "
+                 "диски, WAN, интернет, DNS, прокси tachyon/sing-box, Tailscale, "
+                 "клиенты и ошибки в журнале logread. Безопасно, только чтение."),
+        "devices": [ROUTER],
+        "args": {"log_lines": {"type": "int", "default": 400, "min": 50, "max": 2000}},
+    },
     "router.clients": {
         "desc": "Подключённые к роутеру устройства (DHCP-аренды, WiFi-клиенты).",
         "devices": [ROUTER],
@@ -431,6 +438,48 @@ CATALOG: dict[str, dict[str, Any]] = {
         "args": {
             "query": {"type": "str", "required": True, "max_len": 200},
             "limit": {"type": "int", "default": 10, "min": 1, "max": 50},
+        },
+    },
+
+    # ─────────────── Расписание (ядро, без внешнего cron) ───────────────
+    "schedule.list": {
+        "desc": ("Показать задачи расписания: название, время, дни, вид, "
+                 "когда выполнялась в последний раз и когда следующая."),
+        "devices": [CORE],
+        "args": {},
+    },
+    "schedule.add": {
+        "desc": ("Создать или обновить ежедневную задачу. kind=router_report — "
+                 "отчёт по роутеру с проверкой журнала; kind=prompt — выполнить "
+                 "текст prompt через ИИ (например, проверить что-то и рассказать). "
+                 "time — ЧЧ:ММ по Москве. days — необязательный список mon/tue/wed/"
+                 "thu/fri/sat/sun; пусто — каждый день. Задача с тем же title "
+                 "обновляется, а не дублируется."),
+        "devices": [CORE],
+        "args": {
+            "title": {"type": "str", "required": True, "max_len": 128},
+            "time": {"type": "str", "required": True, "max_len": 5},
+            "kind": {"type": "str", "default": "router_report",
+                     "enum": ["router_report", "prompt"]},
+            "prompt": {"type": "str", "default": "", "max_len": 2000},
+            "days": {"type": "list", "items": "str", "default": [], "max_items": 7},
+        },
+    },
+    "schedule.remove": {
+        "desc": "Удалить задачу расписания по id или названию.",
+        "devices": [CORE],
+        "args": {
+            "id_or_title": {"type": "str", "required": True, "max_len": 128},
+        },
+    },
+    "schedule.run": {
+        "desc": ("Выполнить задачу расписания сейчас (например, показать отчёт "
+                 "по роутеру, не дожидаясь 10:00). deliver=true дополнительно "
+                 "отправит результат в Telegram."),
+        "devices": [CORE],
+        "args": {
+            "id_or_title": {"type": "str", "required": True, "max_len": 128},
+            "deliver": {"type": "bool", "default": False},
         },
     },
 }

@@ -96,6 +96,15 @@ class Settings:
     # TELEGRAM_ALLOWED_CHAT_IDS (tg-<id>), иначе «main».
     chat_session: str = os.getenv("CHAT_SESSION", "").strip()
 
+    # Планировщик ежедневных задач (отчёт по роутеру и т.п.).
+    schedule_enabled: bool = _bool("SCHEDULE_ENABLED", True)
+    schedule_tz: str = os.getenv("SCHEDULE_TZ", "Europe/Moscow").strip()
+    # Куда присылать отчёты. Пусто — первый чат из TELEGRAM_ALLOWED_CHAT_IDS.
+    schedule_chat_id: str = os.getenv("SCHEDULE_CHAT_ID", "").strip()
+    # Сколько минут после назначенного времени ещё можно выполнить задачу,
+    # если ядро было выключено (иначе пропускаем до следующего дня).
+    schedule_catch_up_minutes: int = int(os.getenv("SCHEDULE_CATCH_UP_MINUTES", "120"))
+
     # Присланные файлы: оригиналы уходят на SSD роутера по SFTP, локально
     # остаётся кэш и извлечённый текст для планировщика.
     router_host: str = os.getenv("ROUTER_HOST", "").strip()

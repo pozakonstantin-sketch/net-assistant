@@ -19,51 +19,69 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        if (!new Prefs(this).loggedIn()) {
-            startActivity(new Intent(this, LoginActivity.class));
-            finish();
-            return;
-        }
-        setContentView(R.layout.activity_main);
+        try {
+            if (isFinishing()) return;
+            if (!new Prefs(this).loggedIn()) {
+                startActivity(new Intent(this, LoginActivity.class));
+                finish();
+                return;
+            }
+            if (isFinishing()) return;
+            setContentView(R.layout.activity_main);
 
-        bottomNav = findViewById(R.id.bottom_nav);
-        bottomNav.setOnItemSelectedListener(item -> {
-            int id = item.getItemId();
-            if (id == R.id.nav_chat) {
+            bottomNav = findViewById(R.id.bottom_nav);
+            if (bottomNav != null) {
+                bottomNav.setOnItemSelectedListener(item -> {
+                    int id = item.getItemId();
+                    if (id == R.id.nav_chat) {
+                        show(new ChatFragment());
+                        return true;
+                    }
+                    if (id == R.id.nav_commands) {
+                        show(new CommandsFragment());
+                        return true;
+                    }
+                    if (id == R.id.nav_devices) {
+                        show(new DevicesFragment());
+                        return true;
+                    }
+                    if (id == R.id.nav_audit) {
+                        show(new ActivityFragment());
+                        return true;
+                    }
+                    if (id == R.id.nav_more) {
+                        show(new MoreFragment());
+                        return true;
+                    }
+                    return false;
+                });
+            }
+            if (savedInstanceState == null) {
                 show(new ChatFragment());
-                return true;
+                if (bottomNav != null) {
+                    bottomNav.setSelectedItemId(R.id.nav_chat);
+                }
             }
-            if (id == R.id.nav_commands) {
-                show(new CommandsFragment());
-                return true;
-            }
-            if (id == R.id.nav_devices) {
-                show(new DevicesFragment());
-                return true;
-            }
-            if (id == R.id.nav_audit) {
-                show(new ActivityFragment());
-                return true;
-            }
-            if (id == R.id.nav_more) {
-                show(new MoreFragment());
-                return true;
-            }
-            return false;
-        });
-        if (savedInstanceState == null) {
-            show(new ChatFragment());
-            bottomNav.setSelectedItemId(R.id.nav_chat);
+        } catch (Exception e) {
+            Ui.toast(this, "Ошибка запуска приложения: " + e.getMessage());
         }
     }
 
     private void show(@NonNull Fragment fragment) {
-        FragmentTransaction tx = getSupportFragmentManager().beginTransaction();
-        tx.replace(R.id.container, fragment);
-        tx.commitAllowingStateLoss();
+        try {
+            FragmentTransaction tx = getSupportFragmentManager().beginTransaction();
+            tx.replace(R.id.container, fragment);
+            tx.commitAllowingStateLoss();
+        } catch (Exception e) {
+            Ui.toast(this, "Ошибка переключения экрана: " + e.getMessage());
+        }
     }
 
     public void showFiles() {
-        startActivity(new Intent(this, FilesActivity.class));
+        try {
+            startActivity(new Intent(this, FilesActivity.class));
+        } catch (Exception e) {
+            Ui.toast(this, "Не удалось открыть файлы: " + e.getMessage());
+        }
     }
 }

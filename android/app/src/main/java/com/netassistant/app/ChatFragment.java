@@ -146,9 +146,11 @@ public class ChatFragment extends Fragment {
     /* ─────────────────── сессия и история ─────────────────── */
 
     private void loadSession() {
+        if (!isAdded()) return;
         Api.get(requireContext(), "/session", new Api.Cb() {
             @Override
             public void ok(JSONObject body) {
+                if (!isAdded()) return;
                 session = body.optString("session", "");
                 new Prefs(requireContext()).setSession(session);
                 loadHistory();
@@ -156,6 +158,7 @@ public class ChatFragment extends Fragment {
 
             @Override
             public void fail(String message) {
+                if (!isAdded()) return;
                 session = new Prefs(requireContext()).session();
                 loadHistory();
                 Ui.toast(requireContext(), "Сессия: " + (message.isEmpty() ? "ошибка" : message));
@@ -164,9 +167,11 @@ public class ChatFragment extends Fragment {
     }
 
     private void loadHistory() {
+        if (!isAdded()) return;
         Api.get(requireContext(), "/history?session=" + session + "&limit=200", new Api.Cb() {
             @Override
             public void ok(JSONObject body) {
+                if (!isAdded()) return;
                 items.clear();
                 JSONArray arr = body.optJSONArray("messages");
                 if (arr != null) {
@@ -186,6 +191,7 @@ public class ChatFragment extends Fragment {
 
             @Override
             public void fail(String message) {
+                if (!isAdded()) return;
                 Ui.toast(requireContext(), "Не удалось загрузить историю: " + message);
             }
         });
@@ -233,6 +239,7 @@ public class ChatFragment extends Fragment {
         Api.post(requireContext(), "/chat?source=android", body, new Api.Cb() {
             @Override
             public void ok(JSONObject turn) {
+                if (!isAdded()) return;
                 sending = false;
                 input.setEnabled(true);
                 sendButton.setEnabled(true);
@@ -242,6 +249,7 @@ public class ChatFragment extends Fragment {
 
             @Override
             public void fail(String message) {
+                if (!isAdded()) return;
                 sending = false;
                 input.setEnabled(true);
                 sendButton.setEnabled(true);
@@ -292,6 +300,7 @@ public class ChatFragment extends Fragment {
                 .build(), new Api.Cb() {
             @Override
             public void ok(JSONObject turn) {
+                if (!isAdded()) return;
                 Ui.toast(requireContext(), "Файл сохранён на SSD роутера и отправлен ИИ");
                 input.setText("");
                 loadHistory();
@@ -300,6 +309,7 @@ public class ChatFragment extends Fragment {
 
             @Override
             public void fail(String message) {
+                if (!isAdded()) return;
                 Ui.toast(requireContext(), "Не удалось отправить файл: " + message);
             }
         });
@@ -308,13 +318,14 @@ public class ChatFragment extends Fragment {
     /* ─────────────────── голосовой ввод ─────────────────── */
 
     private void toggleVoice() {
+        if (!isAdded()) return;
         if (recording) {
             stopRecording();
             return;
         }
         if (ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.RECORD_AUDIO)
                 != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, 1001);
+            Ui.toast(requireContext(), "Запись голоса требует разрешения на микрофон (RECORD_AUDIO)");
             return;
         }
         startRecording();
@@ -323,6 +334,7 @@ public class ChatFragment extends Fragment {
     @Override
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (!isAdded()) return;
         if (requestCode == 1001 && grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
             startRecording();
         } else {
@@ -379,6 +391,7 @@ public class ChatFragment extends Fragment {
                             .build(), new Api.Cb() {
                         @Override
                         public void ok(JSONObject turn) {
+                            if (!isAdded()) return;
                             String heard = turn.optString("text", "");
                             Ui.toast(requireContext(), heard.isEmpty() ? "Голосовое отправлено" : "Распознано: " + heard);
                             loadHistory();
@@ -387,6 +400,7 @@ public class ChatFragment extends Fragment {
 
                         @Override
                         public void fail(String message) {
+                            if (!isAdded()) return;
                             Ui.toast(requireContext(), "Голос не распознан: " + message);
                         }
                     });
@@ -398,7 +412,7 @@ public class ChatFragment extends Fragment {
     /* ─────────────────── озвучка ответа ─────────────────── */
 
     private void maybeSpeak(String text) {
-        if (text == null || text.isEmpty() || text.equals(lastTtsText) || !new Prefs(requireContext()).tts()) {
+        if (!isAdded() || text == null || text.isEmpty() || text.equals(lastTtsText) || !new Prefs(requireContext()).tts()) {
             return;
         }
         lastTtsText = text;
@@ -462,6 +476,7 @@ public class ChatFragment extends Fragment {
     /* ─────────────────── подтверждение опасных команд ─────────────────── */
 
     private void onConfirm(Message message, JSONObject pending) {
+        if (!isAdded()) return;
         String token = pending.optString("token", "");
         String device = pending.optString("device", "");
         String action = pending.optString("action", "");
@@ -471,16 +486,19 @@ public class ChatFragment extends Fragment {
                 .setTitle("Подтверждение")
                 .setMessage(question + "\n\n" + device + " → " + action)
                 .setPositiveButton("Подтвердить", (d, w) -> {
+                    if (!isAdded()) return;
                     String confirmPath = "/confirm/" + token + "?session=" + session + "&source=android";
                     Api.post(requireContext(), confirmPath, new JSONObject(), new Api.Cb() {
                         @Override
                         public void ok(JSONObject body) {
+                            if (!isAdded()) return;
                             Ui.toast(requireContext(), "Готово: " + body.optString("action", action));
                             loadHistory();
                         }
 
                         @Override
                         public void fail(String message) {
+                            if (!isAdded()) return;
                             Ui.toast(requireContext(), "Не удалось подтвердить: " + message);
                         }
                     });

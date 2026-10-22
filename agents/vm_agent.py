@@ -446,8 +446,42 @@ def tailscale_peers(_args: dict) -> dict:
     }
 
 
+def vm_shell(args: dict) -> dict:
+    """Команда на самой ВМ — ассистент обслуживает свою ОС сам.
+
+    Выполняется через sudo -n (у пользователя assistant это разрешено),
+    заблокированы выключение/перезагрузка: ВМ — ядро всего ассистента.
+    """
+    command = str(args.get("command") or "").strip()
+    timeout = int(args.get("timeout", 300))
+    if not command:
+        raise ValueError("пустая команда")
+    lowered = command.lower()
+    banned = ("shutdown", "reboot", "poweroff", "halt", "init 0", "init 6")
+    for word in banned:
+        if word in lowered:
+            raise ValueError(
+                f"команда с «{word}» запрещена: ВМ запускает само ядро ассистента, "
+                "перезагрузит её только человек")
+    try:
+        completed = subprocess.run(
+            ["sudo", "-n", "bash", "-lc", command],
+            capture_output=True, timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"команда не завершилась за {timeout} с") from None
+    stdout = completed.stdout.decode("utf-8", "replace")
+    stderr = completed.stderr.decode("utf-8", "replace")
+    return {
+        "exit_code": completed.returncode,
+        "stdout": stdout[-4000:],
+        "stderr": stderr[-2000:],
+    }
+
+
 HANDLERS = {
     "vm.info": vm_info,
+    "vm.shell": vm_shell,
     "vm.screenshot": vm_screenshot,
     "vm.move": vm_move,
     "vm.click": vm_click,

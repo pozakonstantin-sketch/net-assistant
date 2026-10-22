@@ -378,6 +378,16 @@ CATALOG: dict[str, dict[str, Any]] = {
         "devices": [VM],
         "args": {"key": {"type": "str", "required": True, "max_len": 64}},
     },
+    "vm.shell": {
+        "desc": ("Выполнить shell-команду на самой ВМ (ассистент обслуживает "
+                 "свою ОС: обновления, диагностика, сервисы). Выполняется с "
+                 "правами root (sudo). Запрещены: выключение/перезагрузка ВМ."),
+        "devices": [VM],
+        "args": {
+            "command": {"type": "str", "required": True, "max_len": 4000},
+            "timeout": {"type": "int", "default": 300, "min": 1},
+        },
+    },
 
     # ───────────────────────────── Роутер ─────────────────────────────
     "router.report": {

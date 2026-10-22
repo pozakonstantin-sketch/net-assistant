@@ -42,16 +42,65 @@ log = logging.getLogger("core")
 CONFIRM_RE = re.compile(r"^\s*(?:подтверждаю|подтвердить|confirm)\s+([A-Za-z0-9_\-]+)\s*$", re.I)
 
 
+# ─────────────────────── уборка временных файлов ───────────────────────
+
+# data/shots, data/uploads и data/files живут годами: скриншоты и кэш
+# присылаемых файлов тихо съедают диск на ВМ. Раз в час удаляем файл старше
+# CLEANUP_TTL, а сам индекс файлов (index.jsonl) не трогаем.
+CLEANUP_DIRS = ("shots", "uploads", "files")
+CLEANUP_TTL = 7 * 24 * 3600.0
+CLEANUP_EVERY = 3600.0
+
+
+def _cleanup_once() -> None:
+    import time as _time
+
+    cutoff = _time.time() - CLEANUP_TTL
+    for name in CLEANUP_DIRS:
+        directory = DATA_DIR / name
+        if not directory.is_dir():
+            continue
+        removed = 0
+        for item in directory.iterdir():
+            if not item.is_file():
+                continue
+            if name == "files" and item.name == "index.jsonl":
+                continue  # индекс файлов живёт дольше кэша
+            try:
+                if item.stat().st_mtime < cutoff:
+                    item.unlink()
+                    removed += 1
+            except OSError:
+                continue
+        if removed:
+            log.info("убрано устаревших файлов в data/%s: %d", name, removed)
+
+
+async def _cleanup_loop() -> None:
+    await asyncio.sleep(30)
+    while True:
+        try:
+            await asyncio.to_thread(_cleanup_once)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - уборка не должна ронять ядро
+            log.exception("ошибка уборки временных файлов")
+        await asyncio.sleep(CLEANUP_EVERY)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     SHOTS_DIR.mkdir(parents=True, exist_ok=True)
     chat_history.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    cleaner_task = asyncio.create_task(_cleanup_loop(), name="net-assistant-cleanup")
     scheduler_task = scheduler.start()
     log.info("ядро запущено: http://%s:%s (устройств в памяти: %d)",
              settings.host, settings.port, len(hub.devices))
     if settings.token in {"", "change-me"}:
         log.warning("ASSISTANT_TOKEN не задан — задайте его в .env, иначе агенты не подключатся")
     yield
+    cleaner_task.cancel()
+    await asyncio.gather(cleaner_task, return_exceptions=True)
     await scheduler.stop(scheduler_task)
     log.info("ядро остановлено")
 
@@ -363,9 +412,9 @@ async def models_list(refresh: bool = False) -> dict:
 
     refresh=true заставляет заново опросить CLI opencode (может занять до минуты).
     """
-    info = models.info()
+    info = await asyncio.to_thread(models.info)
     if refresh:
-        info["models"] = models.available(refresh=True)
+        info["models"] = await asyncio.to_thread(models.available, True)
     return info
 
 
@@ -373,21 +422,21 @@ async def models_list(refresh: bool = False) -> dict:
 async def models_switch(request: ModelRequest) -> dict:
     """Переключить модель планировщика на ходу (без перезапуска ядра)."""
     try:
-        chosen = models.set_current(request.model)
+        chosen = await asyncio.to_thread(models.set_current, request.model)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(503, str(exc)) from exc
     audit.write(event="model_switch", model=chosen)
-    return {"status": "ok", **models.info()}
+    return {"status": "ok", **await asyncio.to_thread(models.info())}
 
 
 @app.delete("/models", dependencies=[Depends(require_token)])
 async def models_reset() -> dict:
     """Вернуться к модели из .env (OPENCODE_MODEL)."""
-    models.reset()
+    await asyncio.to_thread(models.reset)
     audit.write(event="model_reset")
-    return {"status": "ok", **models.info()}
+    return {"status": "ok", **await asyncio.to_thread(models.info())}
 
 
 # ─────────────────────────── прямой вызов команды ───────────────────────────
@@ -461,7 +510,7 @@ async def chat(request: ChatRequest, source: str = "web") -> dict:
 
     if text.lower() in {"отмена", "нет", "cancel"}:
         cleared = len(llm.confirmations.list())
-        llm.confirmations._items.clear()
+        llm.confirmations.clear()
         reply = f"Отменено. Снято ожидающих подтверждений: {cleared}"
         chat_history.append(request.session, "user", text, source=source)
         chat_history.append(request.session, "assistant", reply, source=source)
@@ -728,6 +777,10 @@ async def agent_socket(websocket: WebSocket) -> None:
         hello = await asyncio.wait_for(websocket.receive_json(), timeout=15)
     except (asyncio.TimeoutError, WebSocketDisconnect):
         await websocket.close(code=4400, reason="ожидалось hello")
+        return
+    except Exception as exc:  # noqa: BLE001 - не-JSON greeting не должен ронять обработчик
+        log.warning("агент прислал некорректный hello: %s", exc)
+        await websocket.close(code=4400, reason="ожидался JSON hello")
         return
 
     if hello.get("type") != "hello" or not hello.get("device_id"):

@@ -13,6 +13,7 @@ import logging
 import os
 import platform as platform_mod
 import time
+import urllib.parse
 from typing import Any, Callable
 
 import websockets
@@ -45,7 +46,7 @@ class AgentClient:
         # устройство всё равно остаётся на связи через домашнюю сеть.
         raw = core_url or os.getenv("CORE_URLS") or os.getenv("CORE_URL", "ws://127.0.0.1:8787")
         bases = [item.strip().rstrip("/") for item in raw.split(",") if item.strip()]
-        secret = token or settings.token
+        secret = urllib.parse.quote(token or settings.token, safe="")
         self.urls = [f"{base}/ws/agent?token={secret}" for base in bases] or [
             f"ws://127.0.0.1:8787/ws/agent?token={secret}"
         ]
@@ -53,12 +54,36 @@ class AgentClient:
         self.max_size = max_message_mb * 1024 * 1024
         self._send_lock = asyncio.Lock()
         self._stop = asyncio.Event()
+        # Актуальное websocket-соединение: результат долгой команды мог
+        # дозревать после переподключения, слать его нужно в живой сокет.
+        self._ws = None
+        self._tasks: set[asyncio.Task] = set()
 
     # ─────────────────────────── подключение ───────────────────────────
 
     async def _send(self, websocket, payload: dict) -> None:
         async with self._send_lock:
             await websocket.send(json.dumps(payload, ensure_ascii=False))
+
+    async def _send_current(self, payload: dict) -> None:
+        """Отправить результат в актуальное соединение (или дождаться нового).
+
+        Если старый сокет закрылся, пока команда выполнялась, память о ней
+        висит в ядре: пересылаем результат по новому соединению, чтобы ядро
+        разбудило ожидающего, а не ждало таймаута.
+        """
+        last_error: Exception | None = None
+        deadline = time.monotonic() + 30.0
+        while time.monotonic() < deadline:
+            websocket = self._ws
+            if websocket is not None:
+                try:
+                    await self._send(websocket, payload)
+                    return
+                except Exception as exc:  # noqa: BLE001 - сокет закрылся под ногами
+                    last_error = exc
+            await asyncio.sleep(1.0)
+        raise last_error or RuntimeError("нет активного соединения с ядром")
 
     async def _session(self, url: str) -> None:
         async with websockets.connect(
@@ -76,6 +101,7 @@ class AgentClient:
                 raise RuntimeError(f"ядро отказало: {welcome.get('error', welcome)}")
             log.info("подключено к ядру как «%s» (%d команд)",
                      self.device_id, len(self.handlers))
+            self._ws = websocket
 
             while not self._stop.is_set():
                 try:
@@ -88,11 +114,16 @@ class AgentClient:
                 kind = message.get("type")
 
                 if kind == "command":
-                    asyncio.create_task(self._execute(websocket, message))
+                    task = asyncio.create_task(self._execute(message))
+                    # держим ссылку, иначе GC может собрать задачу с ошибкой
+                    self._tasks.add(task)
+                    task.add_done_callback(
+                        lambda done: self._tasks.discard(done))
                 elif kind == "ping":
                     await self._send(websocket, {"type": "pong"})
                 elif kind == "error":
                     raise RuntimeError(message.get("error", "ошибка ядра"))
+        self._ws = None
 
     async def run_forever(self) -> None:
         backoff = 1.0
@@ -121,7 +152,7 @@ class AgentClient:
 
     # ─────────────────────────── выполнение ───────────────────────────
 
-    async def _execute(self, websocket, command: dict) -> None:
+    async def _execute(self, command: dict) -> None:
         action = command.get("action", "")
         args = command.get("args") or {}
         command_id = command.get("id", "?")
@@ -131,14 +162,14 @@ class AgentClient:
         ttl = float(command.get("ttl") or 0)
         sent_at = float(command.get("sent_at") or time.time())
         if ttl and time.time() - sent_at > ttl:
-            await self._send(websocket, protocol.result(
+            await self._send_current(protocol.result(
                 command_id, False, error=f"команда устарела (TTL {ttl:.0f} с)",
                 duration_ms=int((time.perf_counter() - started) * 1000)))
             return
 
         handler = self.handlers.get(action)
         if handler is None:
-            await self._send(websocket, protocol.result(
+            await self._send_current(protocol.result(
                 command_id, False, error=f"агент не умеет «{action}»"))
             return
 
@@ -153,15 +184,15 @@ class AgentClient:
                 outcome = {"value": str(outcome)}
         except Exception as exc:  # noqa: BLE001 - любая ошибка уходит ядру
             log.warning("! %s: %s: %s", action, type(exc).__name__, exc)
-            await self._send(websocket, protocol.result(
+            await self._send_current(protocol.result(
                 command_id, False, error=f"{type(exc).__name__}: {exc}",
                 duration_ms=int((time.perf_counter() - started) * 1000)))
             return
 
         elapsed = int((time.perf_counter() - started) * 1000)
         log.info("← %s ok за %d мс", action, elapsed)
-        await self._send(websocket, protocol.result(command_id, True, outcome,
-                                                    duration_ms=elapsed))
+        await self._send_current(protocol.result(command_id, True, outcome,
+                                                 duration_ms=elapsed))
 
     # ─────────────────────────── утилиты ───────────────────────────
 

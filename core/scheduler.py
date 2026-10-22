@@ -302,10 +302,24 @@ def ensure_defaults() -> None:
 
 
 async def _collect_router_report() -> dict:
-    from .hub import hub
+    from .hub import DeviceOffline, hub
 
-    result = await hub.dispatch("router", "router.report",
-                                {"log_lines": 400}, timeout=120)
+    last: Exception | None = None
+    # Агент роутера живёт в той же ВМ, но connection мог быть ровно на
+    # переподключении (это уже срывало ежедневный отчёт в 10:16): ждём
+    # подключения до пары минут, прежде чем признавать отказ честным.
+    deadline = asyncio.get_event_loop().time() + 120
+    while True:
+        try:
+            result = await hub.dispatch("router", "router.report",
+                                        {"log_lines": 400}, timeout=120)
+            break
+        except DeviceOffline as exc:
+            last = exc
+            if asyncio.get_event_loop().time() > deadline:
+                raise
+            log.info("роутер сейчас не отвечает (%s) — ждём подключения", exc)
+            await asyncio.sleep(5)
     if not isinstance(result, dict):
         raise RuntimeError("роутер вернул неожиданный формат отчёта")
     return result
@@ -631,25 +645,43 @@ def _due_state(task: dict, now: datetime) -> str:
     return "due" if now - due <= _grace(task) else "skipped"
 
 
+def _apply_updates(updates: dict[str, dict]) -> None:
+    """Сохранить поля выполнения, не затерев параллельные правки задач.
+
+    tick держит список задач снятым задолго до завершения (run_task может
+    занимать минуту): за это время владелец мог добавить или удалить задачу
+    через чат/API. Повторно читаем файл и обновляем только поля выполнения.
+    """
+    if not updates:
+        return
+    fresh = {str(task.get("id")): task for task in _load()}
+    for task_id, update in updates.items():
+        task = fresh.get(task_id)
+        if task is not None:
+            task.update(update)
+    _save(list(fresh.values()))
+
+
 async def tick(now: datetime | None = None) -> None:
     now = now or datetime.now(_zone())
     tasks = _load()
-    changed = False
+    updates: dict[str, dict] = {}
     for task in tasks:
         state = _due_state(task, now)
         if state == "idle":
             continue
         today = now.date().isoformat()
         if state == "skipped":
-            task["last_run"] = today
-            task["last_status"] = "skipped"
-            task["last_error"] = "пропущено: ядро было выключено"
-            changed = True
+            updates[task["id"]] = {
+                "last_run": today,
+                "last_status": "skipped",
+                "last_error": "пропущено: ядро было выключено",
+            }
             continue
 
-        task["last_status"] = "running"
-        task["last_error"] = ""
-        _save(tasks)
+        updates.setdefault(task["id"], {})["last_status"] = "running"
+        updates.setdefault(task["id"], {})["last_error"] = ""
+        _apply_updates(updates)
         try:
             outcome = await run_task(task, scheduled=True)
             delivered = await _deliver(outcome["text"])
@@ -666,10 +698,12 @@ async def tick(now: datetime | None = None) -> None:
                 f"⚠️ Задача «{task.get('title')}» не выполнена: {exc}"
             )
         task["last_run"] = today
-        changed = True
-        _save(tasks)
-    if changed:
-        _save(tasks)
+        updates[task["id"]] = {
+            key: task[key]
+            for key in ("last_run", "last_status", "last_error", "last_report_ts")
+            if key in task
+        }
+    _apply_updates(updates)
 
 
 async def _loop() -> None:

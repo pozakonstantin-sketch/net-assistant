@@ -71,7 +71,10 @@ public class DevicesFragment extends Fragment {
                     for (int i = 0; i < arr.length(); i++) {
                         try {
                             JSONObject o = arr.getJSONObject(i);
-                            JSONArray acts = o.optJSONArray("actions");
+                            // available_actions — уже отфильтрованный по каталогу
+                            // список (как в веб-панели), а «actions» агентский
+                            // полный набор: команды из него ядро бы отклоняло.
+                            JSONArray acts = o.optJSONArray("available_actions");
                             List<String> actsList = new ArrayList<>();
                             if (acts != null) {
                                 for (int j = 0; j < acts.length(); j++) {

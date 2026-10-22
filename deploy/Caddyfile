@@ -1,5 +1,8 @@
 {
-	admin off
+	# admin нужен для «caddy reload» после продления сертификата
+	# (deploy/net-assistant-cert.sh): без него сертификат обновлялся бы
+	# только вместе с рестартом сервиса.
+	admin localhost:2019
 	auto_https off
 }
 

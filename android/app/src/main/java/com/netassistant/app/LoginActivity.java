@@ -63,7 +63,7 @@ public class LoginActivity extends AppCompatActivity {
             new Prefs(this).setServer(server);
             new Prefs(this).setToken(token);
 
-            Api.get(this, "/health", new Api.Cb() {
+            Api.get(this, "/devices", new Api.Cb() {
                 @Override
                 public void ok(JSONObject body) {
                     runOnUiThread(() -> {

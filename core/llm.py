@@ -70,7 +70,7 @@ class Confirmations:
 
     def create(self, device: str, action: str, args: dict) -> Pending:
         self._purge()
-        token = secrets.token_urlsafe(4)
+        token = secrets.token_urlsafe(16)
         summary = ", ".join(f"{k}={v!r}" for k, v in args.items()) or "без аргументов"
         item = Pending(
             token=token,
@@ -100,6 +100,10 @@ class Confirmations:
         now = time.time()
         for token in [t for t, p in self._items.items() if now - p.created > CONFIRM_TTL]:
             self._items.pop(token, None)
+
+    def clear(self) -> None:
+        """Сбросить все неподтверждённые действия (используется при /reset)."""
+        self._items.clear()
 
 
 confirmations = Confirmations()

@@ -197,9 +197,27 @@ class Phone:
         return self._size
 
     def dump_ui(self) -> str:
-        remote = "/sdcard/net-assistant-ui.xml"
-        self.shell(f"uiautomator dump --compressed {remote} >/dev/null 2>&1")
-        return self.exec_out(f"cat {remote}").decode("utf-8", "replace")
+        """Дамп интерфейса без гонок: уникальный файл, проверка и уборка.
+
+        Раньше дамп писали в один и тот же /sdcard/net-assistant-ui.xml и
+        молча глотали ошибки uiautomator: при неудаче возвращался XML
+        прошлого экрана, и тап шел по устаревшим координатам.
+        """
+        remote = f"/sdcard/na-ui-{int(time.time() * 1000)}.xml"
+        with self._lock:
+            try:
+                self.shell(f'rm -f "{remote}"')
+                text = self.shell(f'uiautomator dump --compressed "{remote}"')
+                data = self.exec_out(f'cat "{remote}"').decode("utf-8", "replace")
+                if not data.lstrip().startswith("<?xml"):
+                    raise RuntimeError(
+                        "uiautomator не выдал XML: " + text.strip()[:200])
+                return data
+            finally:
+                try:
+                    self.shell(f'rm -f "{remote}"')
+                except Exception:  # noqa: BLE001 - мусор на телефоне не критичен
+                    pass
 
 
 phone = Phone()

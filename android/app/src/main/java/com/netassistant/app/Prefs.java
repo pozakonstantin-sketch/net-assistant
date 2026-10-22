@@ -12,7 +12,8 @@ public final class Prefs {
     }
 
     public String server() {
-        return sp.getString("server", "http://192.168.1.161:8787");
+        // Адрес не вшиваем: сервер и токен вводятся на экране входа.
+        return sp.getString("server", "");
     }
 
     public void setServer(String value) {
@@ -20,7 +21,9 @@ public final class Prefs {
     }
 
     public String token() {
-        return sp.getString("token", "WyLIFvxJ8rjTx16BUWMPu2bLGLUdBBclO9xB7MNAHaQ");
+        // Токен хранится только на устройстве: дефолт пустой, иначе секрет
+        // оказался бы в репозитории.
+        return sp.getString("token", "");
     }
 
     public void setToken(String value) {

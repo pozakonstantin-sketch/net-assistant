@@ -23,8 +23,8 @@ Gen 2 / UEFI, SecureBoot выключен (иначе чужие подписи 
 коммутатор `lab-external` (bridged), DVD первым в загрузке.
 
 ```powershell
-.\tools\create_vm.ps1 -Name assistant -MemoryMB 8192 -Cpu 4 `
-  -DiskPath D:\VMs\assistant\disk.vhdx -Switch lab-external
+.\tools\create_vm.ps1 -Name assistant -Iso D:\VMs\images\astra-se-1.8.1.6-install.iso `
+  -MemoryGB 8 -CpuCount 4 -DiskGB 100 -Switch lab-external
 ```
 
 ## 2. Автоустановка (preseed)

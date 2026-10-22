@@ -325,7 +325,9 @@ public class ChatFragment extends Fragment {
         }
         if (ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.RECORD_AUDIO)
                 != PackageManager.PERMISSION_GRANTED) {
-            Ui.toast(requireContext(), "Запись голоса требует разрешения на микрофон (RECORD_AUDIO)");
+            // Раньше разрешение ни в манифесте не было, ни не запрашивалось —
+            // микрофон в приложении не работал никогда: спрашиваем теперь.
+            requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, 1001);
             return;
         }
         startRecording();
@@ -522,7 +524,9 @@ public class ChatFragment extends Fragment {
             role = o.optString("role", "");
             text = o.optString("text", "");
             source = o.optString("source", "");
-            ts = o.optLong("ts", 0);
+            // Ядро шлёт время в секундах (time.time()), а Date ждёт миллисекунды:
+            // без пересчёта все сообщения показывали бы «1970 год».
+            ts = o.optLong("ts", 0) * 1000L;
             executed = o.optJSONArray("executed");
             pending = o.optJSONArray("pending");
             file = o.optJSONObject("file");

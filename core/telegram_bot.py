@@ -183,6 +183,9 @@ class Telegram:
         self.client = httpx.AsyncClient(timeout=httpx.Timeout(240.0, connect=10.0))
         # Сколько реплик сессии бот уже показал/переслал в Telegram.
         self.seen: dict[str, int] = {}
+        # Модели, показанные последним меню «/models»: callback_data ограничена
+        # 64 байтами, поэтому кнопки шлют индекс, а не полное имя модели.
+        self.model_menu: dict[int, list[str]] = {}
 
     # ── Telegram Bot API ──
 
@@ -207,9 +210,11 @@ class Telegram:
             try:
                 await self.api("sendMessage", payload)
             except RuntimeError as exc:
-                # разметка могла оказаться некорректной — шлём как обычный текст
+                # разметка или кнопки могли оказаться некорректными —
+                # повторяем без HTML и без клавиатуры
                 log.warning("%s", exc)
                 payload.pop("parse_mode", None)
+                payload.pop("reply_markup", None)
                 await self.api("sendMessage", payload)
 
     async def send_photo(self, chat_id: int, path: Path, caption: str = "") -> None:
@@ -549,11 +554,14 @@ class Telegram:
 
         lines = [f"🧠 Текущая модель: <b>{_esc(current)}</b>", "", "Нажмите, чтобы переключить:"]
         rows: list[list[dict]] = []
-        for item in models:
+        # В Telegram callback_data ограничена 64 байтами, а имена моделей бывают
+        # длинными — передаём индекс модели, сами имена держим в памяти.
+        self.model_menu[chat_id] = models[:10]
+        for index, item in enumerate(models[:10]):
             mark = "✅ " if item == current else ""
             lines.append(f"{mark}<code>{_esc(item)}</code>")
             rows.append([{"text": f"{mark}{item.split('/', 1)[-1]}",
-                          "callback_data": f"model:{item}"}])
+                          "callback_data": f"model:{index}"}])
         await self.send(chat_id, "\n".join(lines), keyboard=rows[:10])
 
     async def pending(self, chat_id: int) -> None:
@@ -622,7 +630,13 @@ class Telegram:
             elif data.startswith("model:"):
                 await self.api("answerCallbackQuery",
                                {"callback_query_id": callback_id, "text": "Переключаю"})
-                await self.models(chat_id, data.split(":", 1)[1])
+                choice = data.split(":", 1)[1]
+                menu = self.model_menu.get(chat_id) or []
+                try:
+                    item = menu[int(choice)]
+                except (ValueError, IndexError):
+                    item = choice
+                await self.models(chat_id, item)
             elif data.startswith("voice:"):
                 enabled = data.split(":", 1)[1] == "on"
                 self.set_voice(chat_id, enabled)
@@ -733,10 +747,24 @@ class Telegram:
 
         callback = update.get("callback_query")
         if callback:
-            chat_id = callback["message"]["chat"]["id"]
+            # callback_query.message может быть None: Telegram присылает его
+            # без сообщения, когда исходное сообщение уже удалено/устарело.
+            message = callback.get("message") or {}
+            chat = message.get("chat") or {}
+            if not isinstance(chat, dict) or chat.get("id") is None:
+                log.warning("callback %s без сообщения — только закрываем диалог",
+                            callback.get("id", ""))
+                try:
+                    await self.api("answerCallbackQuery",
+                                   {"callback_query_id": callback.get("id", ""),
+                                    "text": "Сообщение больше не доступно"})
+                except Exception:  # noqa: BLE001
+                    pass
+                return
+            chat_id = chat["id"]
             await self.guard(chat_id, 0, lambda: self.on_callback(
                 chat_id, callback.get("data", ""), callback["id"],
-                callback["message"].get("message_id", 0)))
+                message.get("message_id", 0)))
 
     async def guard(self, chat_id: int, message_id: int, action) -> None:
         allowed = _allowed()
@@ -844,7 +872,13 @@ class Telegram:
                 continue
             for update in data.get("result", []):
                 offset = update["update_id"] + 1
-                await self.handle(update)
+                # Ошибка в одном апдейте не должна ронять long polling:
+                # не пойманный KeyError в handle убивал бы весь цикл.
+                try:
+                    await self.handle(update)
+                except Exception:  # noqa: BLE001 - бот не должен падать
+                    log.exception("сбой обработки одного апдейта")
+            await asyncio.sleep(0.1)
 
 
 async def main() -> None:

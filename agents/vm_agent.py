@@ -66,11 +66,37 @@ for _index in range(1, 13):
 
 # ───────────────────────────── X11 ─────────────────────────────
 
+# Кэш единого X-соединения: новые Display() на каждую команду без close()
+# постепенно съедают файловые дескрипторы.
+_dpy = None
+_dpy_error = False
+
 
 def _display():
     from Xlib import display
 
-    return display.Display(os.environ["DISPLAY"])
+    global _dpy, _dpy_error
+    if _dpy is None or _dpy_error:
+        try:
+            _dpy = display.Display(os.environ["DISPLAY"])
+            _dpy_error = False
+        except Exception:
+            _dpy = None
+            _dpy_error = True
+            raise
+    return _dpy
+
+
+def _reset_dpy() -> None:
+    """Сбросить кэш X-соединения (после ошибки — откроем новое)."""
+    global _dpy, _dpy_error
+    if _dpy is not None:
+        try:
+            _dpy.close()
+        except Exception:  # noqa: BLE001 - уже сломано, лишь бы не препятствовать
+            pass
+    _dpy = None
+    _dpy_error = False
 
 
 def _keycode(dpy, name: str) -> int:

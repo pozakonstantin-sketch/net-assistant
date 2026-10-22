@@ -40,7 +40,20 @@ DEFAULT_SHELL_ALLOW = (
 )
 
 # Символы, разрешающие цепочки и перенаправление — запрещены намеренно.
-FORBIDDEN_CHARS = (";", "&&", "||", "|", ">", "<", "`", "$(", "\n", "&")
+FORBIDDEN_CHARS = (";", "&&", "||", "|", ">", "<", "`", "$(", "\n", "\r", "&")
+
+
+def _has_control_chars(command: str) -> str | None:
+    """Первый управляющий символ в команде или None.
+
+    PowerShell и cmd воспринимают \\r как разделитель операторов: без
+    проверки команда «get-date\\rInvoke-Item ...» проходила по белому
+    списку первым токеном и исполняла произвольный второй.
+    """
+    for char in command:
+        if ord(char) < 32 and char not in "\t":
+            return char if char.isprintable() else f"0x{ord(char):02x}"
+    return None
 
 
 # ───────────────────────────── ограничения доступа ─────────────────────────────
@@ -212,6 +225,10 @@ def shell_run(args: dict) -> dict:
     for char in FORBIDDEN_CHARS:
         if char in command:
             raise PermissionError(f"символ {char!r} запрещён (цепочки и перенаправление отключены)")
+    hidden = _has_control_chars(command)
+    if hidden:
+        raise PermissionError(
+            f"управляющий символ {hidden} запрещён (обход через \\r отключён)")
 
     first = command.split()[0].strip('"').strip("'")
     base = Path(first).name
@@ -231,7 +248,7 @@ def shell_run(args: dict) -> dict:
     completed = subprocess.run(
         argv, shell=isinstance(argv, str), capture_output=True, text=True,
         timeout=SHELL_TIMEOUT, encoding="cp866" if os.name == "nt" else None,
-        errors="ignore",
+        errors="replace",
     )
     return {
         "command": command,

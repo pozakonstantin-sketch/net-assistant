@@ -507,7 +507,7 @@ async def run_turn(user_text: str, history: list[dict]) -> dict:
                     try:
                         result = dict(result)
                         shot = Path(result["file"])
-                        gridded = _with_grid(shot)
+                        gridded = await asyncio.to_thread(_with_grid, shot)
                         try:
                             result["description"] = await describe_image(
                                 gridded, prompt=UI_PROMPT

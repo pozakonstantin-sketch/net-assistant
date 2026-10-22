@@ -309,9 +309,18 @@ def shell_run(args: dict) -> dict:
     if program not in ALLOWED_SHELL:
         raise PermissionError(f"«{program}» не разрешён. Разрешено: {', '.join(sorted(ALLOWED_SHELL))}")
     completed = subprocess.run(parts, capture_output=True, text=True, timeout=TIMEOUT,
-                               errors="ignore")
+                               errors="replace")
     return {"command": command, "exit_code": completed.returncode,
             "stdout": completed.stdout[:MAX_OUTPUT], "stderr": completed.stderr[:2000]}
+
+
+def _sh_bin() -> str:
+    """Путь к sh: в Termux нет /bin/sh — есть $PREFIX/bin/sh."""
+    prefix = os.environ.get("PREFIX", "/data/data/com.termux/files/usr")
+    for candidate in (os.path.join(prefix, "bin", "sh"), "/system/bin/sh"):
+        if os.path.exists(candidate):
+            return candidate
+    return "/bin/sh"
 
 
 def _run_full(command: str, cwd: str | None = None, timeout: int = 60) -> dict:
@@ -319,7 +328,7 @@ def _run_full(command: str, cwd: str | None = None, timeout: int = 60) -> dict:
     timeout = max(1, min(int(timeout), 600))
     workdir = str(guard_path(cwd)) if cwd else None
     completed = subprocess.run(
-        ["/bin/sh", "-c", command], cwd=workdir, capture_output=True, text=True,
+        [_sh_bin(), "-c", command], cwd=workdir, capture_output=True, text=True,
         timeout=timeout, encoding="utf-8", errors="replace",
     )
     return {"command": command, "exit_code": completed.returncode,

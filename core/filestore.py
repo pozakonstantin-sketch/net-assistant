@@ -83,7 +83,9 @@ def upload_many(files: list[tuple[Path, str]], subdir: str = "") -> list[str]:
                 paths.append(remote)
         finally:
             sftp.close()
-    except OSError as exc:
+    except Exception as exc:
+        # paramiko.SSHException и приватные классы не наследуют OSError:
+        # без общего Exception ошибка SFTP пролетает мимо как 500.
         raise StorageError(f"ошибка SFTP: {exc}") from exc
     finally:
         client.close()

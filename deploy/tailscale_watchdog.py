@@ -52,6 +52,15 @@ CERT_MARKERS = (
 def log(message: str) -> None:
     line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} {message}\n"
     try:
+        # Журнал растёт на каждый запуск таймера: по достижении ~2 МБ
+        # обрезаем голову и оставляем половину — ротации нет, это страховка.
+        if os.path.exists(LOG) and \
+                os.path.getsize(LOG) > 2 * 1024 * 1024 - len(line):
+            with open(LOG, "rb") as raw:
+                raw.seek(max(0, os.path.getsize(LOG) // 2))
+                data = raw.read()
+            with open(LOG, "wb") as raw:
+                raw.write(data)
         with open(LOG, "a", encoding="utf-8") as fh:
             fh.write(line)
     except OSError:

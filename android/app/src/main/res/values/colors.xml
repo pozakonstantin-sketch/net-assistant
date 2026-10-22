@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="primary">#6C4DFF</color>
+    <!-- Фон адаптивной иконки запуска (mipmap-anydpi-v26). -->
+    <color name="ic_launcher_bg">#4A2BD6</color>
     <color name="primary_dark">#4A2BD6</color>
     <color name="secondary">#00C2FF</color>
     <color name="accent">#FF4D8D</color>

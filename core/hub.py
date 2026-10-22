@@ -116,7 +116,14 @@ class Hub:
                     command_id=command["id"])
         started = time.perf_counter()
         try:
-            await device.send(command)
+            try:
+                await device.send(command)
+            except Exception as exc:  # noqa: BLE001 - соединение могло оборваться
+                # WS-агент отвалился ровно в момент отправки: у сообщения
+                # об ошибке не должно быть причины «ConnectionClosed», которую
+                # никто не понимает — это тот самый DeviceOffline.
+                raise DeviceOffline(
+                    f"агент «{device_id}» недоступен ({type(exc).__name__})") from exc
             payload = await asyncio.wait_for(future, timeout or settings.command_timeout)
         except asyncio.TimeoutError:
             audit.write(event="timeout", device=device_id, action=action)

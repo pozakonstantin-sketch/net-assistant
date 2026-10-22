@@ -64,7 +64,9 @@ Write-Host "Python агента: $Python" -ForegroundColor Cyan
 Write-Host "Рабочий каталог: $root" -ForegroundColor Cyan
 
 $action = New-ScheduledTaskAction -Execute $Python -Argument "-m agents.pc_agent" -WorkingDirectory $root
-$trigger = New-ScheduledTaskTrigger -AtLogOn
+# Триггер строго на вход ТЕКУЩЕГО пользователя: без -UserId задача на AtLogOn
+# по умолчанию срабатывает при входе любого, а чужой сессии агенту не нужно.
+$trigger = New-ScheduledTaskTrigger -AtLogOn -UserId "$env:USERDOMAIN\$env:USERNAME"
 $settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `

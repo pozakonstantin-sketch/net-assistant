@@ -3,4 +3,4 @@ Description=Net Assistant — архив настроек и переписки
 
 [Service]
 Type=oneshot
-ExecStart=/opt/net-assistant/deploy/backup.sh
+ExecStart=/usr/local/bin/net-assistant-backup.sh

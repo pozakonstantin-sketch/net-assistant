@@ -114,7 +114,18 @@ class Router:
         )
         return client
 
-    def run(self, command: str) -> str:
+    def close(self) -> None:
+        """Закрыть SSH-соединение под локом — например, перед перезагрузкой."""
+        with self._lock:
+            if self._client is None:
+                return
+            try:
+                self._client.close()
+            finally:
+                self._client = None
+
+    def run_status(self, command: str) -> tuple[int, str]:
+        """Выполнить команду и вернуть (код возврата, вывод) — честно об ошибках."""
         with self._lock:
             for attempt in (1, 2):
                 try:
@@ -126,8 +137,8 @@ class Router:
                     code = stdout.channel.recv_exit_status()
                     if code != 0 and error.strip():
                         # у части прошивок предупреждения уходят в stderr с кодом 0
-                        return f"{output}\n[stderr] {error}".strip()
-                    return output.strip()
+                        return code, f"{output}\n[stderr] {error}".strip()
+                    return code, output.strip()
                 except Exception as exc:  # noqa: BLE001 - переподключаемся при обрыве
                     log.warning("SSH %s (попытка %d): %s", self.host, attempt, exc)
                     try:
@@ -137,7 +148,11 @@ class Router:
                         self._client = None
                     if attempt == 2:
                         raise RuntimeError(f"не удалось подключиться к {self.host}: {exc}") from exc
-        return ""
+        return 255, ""
+
+    def run(self, command: str) -> str:
+        """Вывод шаблонной команды; конкретный код возврата важен только для exec.run."""
+        return self.run_status(command)[1]
 
     def template(self, name: str) -> str:
         table = TEMPLATES.get(self.kind) or TEMPLATES["openwrt"]
@@ -178,9 +193,14 @@ def router_wifi(args: dict) -> dict:
     return {"wifi_enabled": enabled, "note": "если вы в WiFi — связь с роутером прервётся"}
 
 
+MAC_RE = re.compile(r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}|[0-9a-f]{12}\Z")
+
+
 def router_kick(args: dict) -> dict:
     mac = str(args["mac"]).strip().lower()
-    if len(mac.split(":")) != 6 and len(mac) != 12:
+    # Жёсткий формат: MAC попадает в команды отключения/блокировки —
+    # строка вида «aa'; reboot; '» не должна пройти дальше.
+    if not MAC_RE.fullmatch(mac):
         raise ValueError("MAC должен быть вида aa:bb:cc:dd:ee:ff")
     result = router.run(_render("kick", mac=mac))
     if args.get("block"):
@@ -193,11 +213,7 @@ def router_reboot(_args: dict) -> dict:
         router.run(_render("reboot"))
     except Exception as exc:  # noqa: BLE001 - роутер обрывает соединение при перезагрузке
         log.info("перезагрузка инициирована (%s)", exc)
-    if router._client:
-        try:
-            router._client.close()
-        finally:
-            router._client = None
+    router.close()
     return {"rebooting": True, "at": time.strftime("%H:%M:%S")}
 
 
@@ -650,8 +666,11 @@ def exec_run(args: dict) -> dict:
     command = str(args["command"]).strip()
     if not command:
         raise ValueError("пустая команда")
-    output = router.run(command)
-    return {"command": command, "stdout": output[:64_000],
+    # В отличие от шаблонных команд результат важен честно: неудачная
+    # команда не должна выглядеть успешной.
+    code, output = router.run_status(command)
+    return {"command": command, "exit_code": code,
+            "stdout": output[:64_000], "ok": code == 0,
             "truncated": len(output) > 64_000}
 
 
@@ -659,30 +678,33 @@ def fs_write(args: dict) -> dict:
     if not FULL_ACCESS:
         raise PermissionError("fs.write доступен только при ACCESS_MODE=full")
     import base64 as _b64
-    path = str(args["path"])
+    import shlex as _shlex
+    path = _shlex.quote(str(args["path"]))
     text = str(args["text"])
     op = ">>" if args.get("append") else ">"
     payload = _b64.b64encode(text.encode("utf-8")).decode("ascii")
-    router.run(f"mkdir -p \"$(dirname '{path}')\" 2>/dev/null; "
-               f"echo '{payload}' | base64 -d {op} '{path}'")
-    return {"path": path, "bytes": len(text.encode("utf-8")),
+    router.run(f"mkdir -p \"$(dirname {path})\" 2>/dev/null; "
+               f"echo '{payload}' | base64 -d {op} {path}")
+    return {"path": str(args["path"]), "bytes": len(text.encode("utf-8")),
             "mode": "append" if args.get("append") else "overwrite"}
 
 
 def fs_delete(args: dict) -> dict:
     if not FULL_ACCESS:
         raise PermissionError("fs.delete доступен только при ACCESS_MODE=full")
+    import shlex as _shlex
     path = str(args["path"])
     flag = "-rf" if args.get("recursive") else "-f"
-    router.run(f"rm {flag} '{path}'")
+    router.run(f"rm {flag} {_shlex.quote(path)}")
     return {"deleted": path}
 
 
 def fs_mkdir(args: dict) -> dict:
     if not FULL_ACCESS:
         raise PermissionError("fs.mkdir доступен только при ACCESS_MODE=full")
+    import shlex as _shlex
     path = str(args["path"])
-    router.run(f"mkdir -p '{path}'")
+    router.run(f"mkdir -p {_shlex.quote(path)}")
     return {"created": path}
 
 

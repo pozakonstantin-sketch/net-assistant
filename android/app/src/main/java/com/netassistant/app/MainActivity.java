@@ -37,10 +37,6 @@ public class MainActivity extends AppCompatActivity {
                         show(new ChatFragment());
                         return true;
                     }
-                    if (id == R.id.nav_commands) {
-                        show(new CommandsFragment());
-                        return true;
-                    }
                     if (id == R.id.nav_devices) {
                         show(new DevicesFragment());
                         return true;

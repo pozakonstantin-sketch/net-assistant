@@ -47,22 +47,31 @@ public final class Ui {
     }
 
     public static void toast(Context c, String message) {
-        Toast toast = Toast.makeText(c.getApplicationContext(), message, Toast.LENGTH_LONG);
-        toast.setGravity(Gravity.CENTER, 0, 0);
-        View view = toast.getView();
-        if (view != null) {
-            view.setBackground(ContextCompat.getDrawable(c, R.drawable.bg_glass));
-            view.setPadding(dp(c, 16), dp(c, 12), dp(c, 16), dp(c, 12));
-            view.setElevation(8f);
+        try {
+            Toast toast = Toast.makeText(c.getApplicationContext(), message, Toast.LENGTH_LONG);
+            toast.setGravity(Gravity.CENTER, 0, 0);
+            View view = toast.getView();
+            if (view != null) {
+                view.setBackground(ContextCompat.getDrawable(c, R.drawable.bg_glass));
+                view.setPadding(dp(c, 16), dp(c, 12), dp(c, 16), dp(c, 12));
+                view.setElevation(8f);
+                TextView tv = view.findViewById(android.R.id.message);
+                if (tv != null) {
+                    tv.setTextColor(0xFFFFFFFF);
+                    tv.setTextSize(15f);
+                    tv.setGravity(Gravity.CENTER);
+                    tv.setTypeface(Typeface.DEFAULT_BOLD);
+                }
+            }
+            toast.show();
+        } catch (Throwable t) {
+            // китайские прошивки иногда роняют декорирование тостов —
+            // показываем простой вариант без оформления
+            try {
+                android.widget.Toast.makeText(c.getApplicationContext(), message, Toast.LENGTH_LONG).show();
+            } catch (Throwable ignored) {
+            }
         }
-        TextView tv = view.findViewById(android.R.id.message);
-        if (tv != null) {
-            tv.setTextColor(0xFFFFFFFF);
-            tv.setTextSize(15f);
-            tv.setGravity(Gravity.CENTER);
-            tv.setTypeface(Typeface.DEFAULT_BOLD);
-        }
-        toast.show();
     }
 
     public static MaterialCardView card(Context c, int c1, int c2, int radiusDp, float elevation) {

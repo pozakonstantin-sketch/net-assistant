@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import threading
 import time
 
@@ -182,9 +183,158 @@ def net_status(_args: dict) -> dict:
 
 
 def router_clients(_args: dict) -> dict:
-    output = router.run(_render("clients"))
-    return {"host": router.host, "raw": output[:4000],
-            "note": "формат вывода зависит от прошивки"}
+    """Кто подключён к роутеру прямо сейчас: DHCP-аренда, WiFi-клиенты, ARP."""
+    # Один прогон SSH: секции разделяем маркерами и разбираем в Python,
+    # чтобы ответ был структурой, а не «сырой кашей» для человека.
+    # WiFi-станции берём из ubus (hostapd get_clients) — это готовый JSON
+    # с сигналом; на многострочный разбор awk на busybox мы уже наелись.
+    clients_script = (
+        "echo '@@@leases'; cat /tmp/dhcp.leases 2>/dev/null; "
+        "echo '@@@wcalls'; "
+        "for hap in $(ubus list 2>/dev/null | grep '^hostapd\\.phy'); do "
+        "echo \"IF:$hap\"; ubus call \"$hap\" get_clients 2>/dev/null; done; "
+        "echo '@@@arp'; cat /proc/net/arp 2>/dev/null"
+    )
+    output = router.run(clients_script)
+    clients = _parse_clients(output)
+    if not clients:
+        # Прошивка не OpenWrt: отдаём сырой вывод шаблона, чтобы человек
+        # и модель всё равно что-то увидели.
+        return {"host": router.host, "clients": [], "count": 0,
+                "raw": router.run(_render("clients"))[:4000],
+                "note": "формат прошивки не распознан — см. raw"}
+    online_wifi = sum(1 for c in clients if c.get("wifi"))
+    return {"host": router.host, "count": len(clients), "wifi": online_wifi,
+            "wired": len(clients) - online_wifi, "clients": clients}
+
+
+def _wifi_blobs(lines: list[str]):
+    """Собрать JSON-ответы ubus get_clients: маркер «IF:<интерфейс>» идёт перед ними."""
+    iface = ""
+    buffer: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("IF:"):
+            iface = stripped[3:].strip()
+            buffer = []
+        elif stripped.startswith("{"):
+            buffer.append(stripped)
+        elif buffer:
+            buffer.append(stripped)
+            blob = "\n".join(buffer)
+            if blob.count("{") == blob.count("}"):
+                yield blob, iface
+                buffer = []
+
+
+def _parse_clients(text: str) -> list[dict]:
+    """Разобрать вывод скрипта в список {hostname, ip, mac, wifi, signal}."""
+    sections: dict[str, list[str]] = {}
+    current: str | None = None
+    buffer: list[str] = []
+    for line in text.splitlines():
+        if line.startswith("@@@"):
+            if current is not None:
+                sections[current] = buffer
+            current, buffer = line[3:].strip(), []
+        elif current is not None:
+            buffer.append(line)
+    if current is not None:
+        sections[current] = buffer
+
+    leases: dict[str, dict] = {}
+    for line in sections.get("leases", []):
+        parts = line.split()
+        if len(parts) >= 3:
+            mac = parts[1].lower()
+            if MAC_RE.fullmatch(mac):
+                leases[mac] = {"ip": parts[2],
+                               "hostname": parts[3] if len(parts) > 3 else ""}
+
+    wifi: dict[str, dict] = {}
+    for blob, iface in _wifi_blobs(sections.get("wcalls", [])):
+        # ubus get_clients: {"freq": ..., "clients": {"<mac>": {"signal": ...}}}
+        try:
+            data = json.loads(blob)
+        except ValueError:
+            continue
+        ap_name = iface.removeprefix("hostapd.")
+        freq = data.get("freq")
+        band = ""
+        if isinstance(freq, int) and freq:
+            band = "2.4G" if freq < 4000 else "5G"
+        for mac, info in (data.get("clients") or {}).items():
+            normalized = str(mac).lower()
+            if not MAC_RE.fullmatch(normalized):
+                continue
+            entry = {"iface": ap_name}
+            if band:
+                entry["band"] = band
+            if info.get("signal") is not None:
+                entry["signal"] = str(info["signal"])
+            wifi[normalized] = entry
+
+    clients: list[dict] = []
+    seen: set[str] = set()
+    for line in sections.get("arp", [])[1:]:  # первая строка — заголовок таблицы
+        parts = line.split()
+        if len(parts) < 6 or parts[0] == "IP" or "incomplete" in line:
+            continue
+        ip, mac, iface = parts[0], parts[3].lower(), parts[5]
+        if not MAC_RE.fullmatch(mac):
+            continue
+        entry: dict = {"ip": ip, "mac": mac, "iface": iface,
+                       "wifi": mac in wifi}
+        lease = leases.get(mac)
+        if lease:
+            hostname = "" if lease["hostname"] in ("*", "?") else lease["hostname"]
+            if hostname:
+                entry["hostname"] = hostname
+        station = wifi.get(mac)
+        if station:
+            if station.get("signal"):
+                entry["signal"] = station["signal"]
+            entry["iface"] = station["iface"]
+            if station.get("band"):
+                entry["band"] = station["band"]
+        clients.append(entry)
+        seen.add(mac)
+
+    # WiFi-клиент мог не попасть в ARP (молчит) — тогда он всё же виден.
+    for mac, station in wifi.items():
+        if mac in seen:
+            continue
+        lease = leases.get(mac)
+        entry = {"mac": mac, "wifi": True, "iface": station["iface"]}
+        if station.get("signal"):
+            entry["signal"] = station["signal"]
+        if station.get("band"):
+            entry["band"] = station["band"]
+        if lease:
+            entry["ip"] = lease["ip"]
+            hostname = "" if lease["hostname"] in ("*", "?") else lease["hostname"]
+            if hostname:
+                entry["hostname"] = hostname
+        clients.append(entry)
+    return clients
+
+
+HOST_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
+
+
+def net_ping(args: dict) -> dict:
+    """Дотянуться до любого устройства в LAN или Tailscale: ping с роутера.
+
+    Чисто диагностическая команда: ответ «жив/не жив» + сырой вывод.
+    """
+    host = str(args["host"]).strip()
+    if not HOST_RE.fullmatch(host):
+        raise ValueError("host должен быть адресом или именем без спецсимволов")
+    output = router.run(f"ping -c 3 -W 2 {shlex.quote(host)}")
+    received = re.search(r"(\d+) packets received", output)
+    alive = bool(received and int(received.group(1)) > 0)
+    return {"host": host, "alive": alive,
+            "summary": ("отвечает" if alive else "не отвечает")}
 
 
 def router_wifi(args: dict) -> dict:
@@ -712,6 +862,7 @@ HANDLERS = {
     "net.status": net_status,
     "router.report": router_report,
     "router.clients": router_clients,
+    "net.ping": net_ping,
     "router.wifi": router_wifi,
     "router.kick": router_kick,
     "router.reboot": router_reboot,

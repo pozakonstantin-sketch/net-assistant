@@ -388,8 +388,22 @@ CATALOG: dict[str, dict[str, Any]] = {
         "args": {"log_lines": {"type": "int", "default": 400, "min": 50, "max": 2000}},
     },
     "router.clients": {
-        "desc": "Подключённые к роутеру устройства (DHCP-аренды, WiFi-клиенты).",
+        "desc": ("Кто подключён к роутеру прямо сейчас: список устройств "
+                 "{hostname, ip, mac, wifi (да/нет), signal (для WiFi). "
+                 "Покрывает и провод и WiFi."),
         "devices": [ROUTER],
+        "args": {},
+    },
+    "net.ping": {
+        "desc": ("Проверить, отвечает ли устройство в сети: ping с роутера по IP "
+                 "или имени (работает и для адресов Tailscale 100.x)."),
+        "devices": [ROUTER],
+        "args": {"host": {"type": "str", "required": True, "max_len": 64}},
+    },
+    "tailscale.peers": {
+        "desc": ("Узлы VPN-сети Tailscale: {name, ip (100.x), online, os, last_seen}. "
+                 "Это устройства твоего tailnet'а — по адресам 100.x они доступны ядру."),
+        "devices": [VM],
         "args": {},
     },
     "router.wifi": {
@@ -411,6 +425,16 @@ CATALOG: dict[str, dict[str, Any]] = {
         "desc": "Перезагрузить роутер. Связь пропадёт на 1-2 минуты.",
         "devices": [ROUTER],
         "dangerous": True,
+        "args": {},
+    },
+
+    # ─────────────── Карта сети (ядро собирает всё само) ───────────────
+    "net.devices": {
+        "desc": ("Обзор ВСЕЙ сети одним вызовом: устройства ассистента (агенты), "
+                 "всё, что подключено к роутеру (LAN: hostname, ip, mac, wifi), "
+                 "и все узлы Tailscale с онлайн-статусом. Если пользователь "
+                 "спрашивает про устройства в сети — вызывай это."),
+        "devices": [CORE],
         "args": {},
     },
 

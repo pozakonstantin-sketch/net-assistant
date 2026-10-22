@@ -393,6 +393,14 @@ async def actions() -> dict:
     }
 
 
+@app.get("/network", dependencies=[Depends(require_token)])
+async def network_map() -> dict:
+    """Полная карта сети: агенты ядра + клиенты роутера + узлы Tailscale."""
+    from . import network_view
+
+    return await network_view.snapshot()
+
+
 @app.get("/audit", dependencies=[Depends(require_token)])
 async def audit_tail(limit: int = 50) -> dict:
     return {"records": audit.tail(max(1, min(limit, 500)))}

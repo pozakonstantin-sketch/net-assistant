@@ -158,6 +158,14 @@ class Hub:
             except scheduler.ScheduleError as exc:
                 audit.write(event="error", device=catalog.CORE, action=action, error=str(exc))
                 raise ValueError(str(exc)) from exc
+        elif action.startswith("net."):
+            from . import network_view
+
+            try:
+                result = await network_view.core_action(action, clean_args)
+            except network_view.NetworkError as exc:
+                audit.write(event="error", device=catalog.CORE, action=action, error=str(exc))
+                raise ValueError(str(exc)) from exc
         else:
             try:
                 result = await asyncio.to_thread(documents.core_action, action, clean_args)

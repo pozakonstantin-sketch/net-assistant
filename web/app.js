@@ -269,7 +269,7 @@ function showScreen(name, options = {}) {
   updateAppbar();
 
   if (name === 'chat') scrollBottom();
-  if (name === 'devices') renderDevices();
+  if (name === 'devices') { renderDevices(); loadNetwork(); }
   if (name === 'activity') refreshMeta();
   if (name === 'more') updateModelLabel();
   reportUiMap();
@@ -364,6 +364,7 @@ function setOnline(ok) {
 async function refreshMeta(initial = false) {
   const jobs = [api('/devices'), api('/pending'), api('/audit?limit=40')];
   if (initial || !Object.keys(state.actions).length) jobs.push(api('/actions'));
+  if (state.networkReady || initial) jobs.push(loadNetwork());  // эпизодически, не каждый тик
   const [devices, pending, audit, actions] = await Promise.all(jobs);
 
   state.devices = devices.devices || [];
@@ -375,6 +376,22 @@ async function refreshMeta(initial = false) {
   renderAudit(audit.records || []);
   updateBadge();
   setOnline(true);
+}
+
+async function loadNetwork() {
+  // Карта сети: LAN-клиенты роутера + узлы Tailscale. Ошибка ядре не роняет.
+  try {
+    state.network = await api('/network');
+    state.networkReady = true;
+  } catch {
+    if (!state.network) state.network = null;
+  }
+  if (name && visibleScreen() === 'devices') renderDevices();
+  return state.network;
+}
+
+function visibleScreen() {
+  return state.screen;
 }
 
 function renderDevices() {
@@ -398,8 +415,79 @@ function renderDevices() {
     card.onclick = () => { haptic(); openDeviceSheet(device); };
     box.append(card);
   }
+  renderNetworkSections(box);
   renderSideDevices();
   reportUiMap();
+}
+
+function renderNetworkSections(box) {
+  // Под каждым агентом ассистента — вся видимая сеть: клиенты роутера
+  // (LAN) и узлы Tailscale. Только просмотр: клик открывает подсказку.
+  const net = state.network;
+  if (!net) {
+    const stub = el('div', 'net-section');
+    stub.append(el('div', 'net-title', '📡 Сеть'));
+    stub.append(el('div', 'device-sub', 'Загружаю устройства сети…'));
+    box.append(stub);
+    return;
+  }
+  const lan = net.lan || {};
+  const lanClients = lan.clients || [];
+  if (lanClients.length) {
+    const section = el('div', 'net-section');
+    section.append(el('div', 'net-title',
+      `📡 Локальная сеть · ${lanClients.length} устройств ` +
+      `(${lan.wifi ?? '?'} WiFi · ${lan.wired ?? '?'} провод)`));
+    for (const client of lanClients.slice(0, 40)) {
+      const row = el('div', 'net-row');
+      const icon = el('span', 'device-icon small');
+      icon.innerHTML = `<svg><use href="#i-${client.wifi ? 'wifi' : 'monitor'}"></use></svg>`;
+      const main = el('span', 'device-main');
+      main.append(el('span', 'device-name', client.hostname || client.ip || client.mac || 'устройство'));
+      const bits = [client.ip || '', client.mac || ''];
+      if (client.signal) bits.push(`сигнал ${client.signal}`);
+      main.append(el('span', 'device-sub', `${client.wifi ? 'WiFi' : 'провод'} · ${bits.filter(Boolean).join(' · ')}`));
+      row.append(icon, main);
+      const pill = el('span', 'status-pill', client.wifi ? 'wifi' : 'lan');
+      row.append(pill);
+      row.onclick = () => { haptic(); openNetSheet('Локальная сеть', client); };
+      section.append(row);
+    }
+    box.append(section);
+  }
+  const ts = net.tailscale || {};
+  const peers = ts.peers || [];
+  if (peers.length) {
+    const section = el('div', 'net-section');
+    section.append(el('div', 'net-title', `🛰 Tailscale · ${peers.length} устройств`));
+    for (const peer of peers) {
+      const row = el('div', 'net-row');
+      const icon = el('span', 'device-icon small');
+      icon.innerHTML = '<svg><use href="#i-wifi"></use></svg>';
+      const main = el('span', 'device-main');
+      main.append(el('span', 'device-name', peer.name || peer.ip || 'узел'));
+      main.append(el('span', 'device-sub',
+        `${peer.ip || '—'}${peer.os ? ' · ' + peer.os : ''}${peer.last_seen && !peer.online ? ' · ' + peer.last_seen : ''}`));
+      row.append(icon, main);
+      const pill = el('span', `status-pill${peer.online ? '' : ' off'}`, peer.online ? 'онлайн' : 'оффлайн');
+      row.append(pill);
+      row.onclick = () => { haptic(); openNetSheet('Tailscale', peer); };
+      section.append(row);
+    }
+    box.append(section);
+  }
+  for (const [source, message] of Object.entries(net.errors || {})) {
+    const note = el('div', 'net-section');
+    note.append(el('div', 'net-title', source === 'lan' ? '📡 Локальная сеть' : '🛰 Tailscale'));
+    note.append(el('div', 'device-sub', `недоступно: ${message}`));
+    box.append(note);
+  }
+  if (!lanClients.length && !peers.length && !Object.keys(net.errors || {}).length) {
+    const note = el('div', 'net-section');
+    note.append(el('div', 'net-title', 'Сеть'));
+    note.append(el('div', 'device-sub', 'Не найдено устройств ни в LAN, ни в Tailscale.'));
+    box.append(note);
+  }
 }
 
 function renderSideDevices() {
@@ -424,6 +512,19 @@ function platformIcon(platform) {
   if (value.includes('win') || value === 'pc') return 'monitor';
   if (value.includes('router') || value.includes('openwrt')) return 'wifi';
   return 'devices';
+}
+
+function openNetSheet(section, item) {
+  // Просмотр.client'а сети: подсказка со всеми полями и подсказкой пинга.
+  const body = document.createDocumentFragment();
+  const pairs = Object.entries(item || {}).filter(([, v]) => v !== '' && v != null);
+  if (!pairs.length) body.append(el('p', 'sheet-text', 'Нет данных.'));
+  for (const [key, value] of pairs) {
+    body.append(el('p', 'sheet-text', `${key}: ${typeof value === 'boolean' ? (value ? 'да' : 'нет') : String(value)}`));
+  }
+  body.append(el('p', 'sheet-text',
+    'Проверить доступность можно у ассистента: «пропингуй <адрес>» — он пингует с роутера.'));
+  openSheet(`${section}: ${item.hostname || item.name || item.ip || item.mac || ''}`, body);
 }
 
 function openDeviceSheet(device) {

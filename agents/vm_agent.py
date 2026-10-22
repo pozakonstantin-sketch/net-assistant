@@ -391,6 +391,61 @@ def vm_open(args: dict) -> dict:
     return {"opened": target}
 
 
+def tailscale_peers(_args: dict) -> dict:
+    """Узлы VPN-сети Tailscale: имя, IP 100.x, онлайн-статус, ОС.
+
+    Tailscaled бенкет на этой же ВМ: его состояние — источник правды о том,
+    кто сейчас в tailnet'е. К этим адресам ядро может обращаться напрямую.
+    """
+    for attempt in (1, 2):
+        try:
+            completed = subprocess.run(
+                ["tailscale", "status", "--json"],
+                capture_output=True, timeout=30,
+            )
+        except FileNotFoundError as exc:
+            raise RuntimeError("tailscale не установлен на ВМ") from exc
+        if completed.returncode != 0 and attempt == 1:
+            # tailscaled мог просыпаться — даём секунду и пробуем снова
+            time.sleep(1)
+            continue
+        break
+    import json as _json
+
+    try:
+        data = _json.loads(completed.stdout.decode("utf-8", "replace") or "{}")
+    except ValueError as exc:
+        raise RuntimeError(
+            "tailscale status вернул не JSON: "
+            + completed.stderr.decode("utf-8", "replace")[:200]) from exc
+
+    def _first_ip(entry: dict) -> str:
+        addresses = entry.get("TailscaleIPs") or entry.get("addresses") or []
+        return str(addresses[0]) if addresses else ""
+
+    self_info = data.get("Self") or {}
+    peers = []
+    for _key, peer in (data.get("Peer") or {}).items():
+        name = peer.get("HostName") or (peer.get("DNSName") or "").split(".")[0]
+        peers.append({
+            "name": name or "безымянный",
+            "dns": peer.get("DNSName") or "",
+            "ip": _first_ip(peer),
+            "online": bool(peer.get("Online")),
+            "os": peer.get("OS") or "",
+            "last_seen": peer.get("LastSeen") or "",
+            "expired": bool(peer.get("Expired")),
+        })
+    peers.sort(key=lambda item: (not item["online"], item["name"].lower()))
+    return {
+        "self": {"name": self_info.get("HostName") or "",
+                 "ip": _first_ip(self_info),
+                 "online": bool(self_info.get("Online", True))},
+        "count": len(peers),
+        "peers": peers,
+    }
+
+
 HANDLERS = {
     "vm.info": vm_info,
     "vm.screenshot": vm_screenshot,
@@ -402,6 +457,7 @@ HANDLERS = {
     "vm.windows": vm_windows,
     "vm.open": vm_open,
     "vm.panel": vm_panel,
+    "tailscale.peers": tailscale_peers,
 }
 
 

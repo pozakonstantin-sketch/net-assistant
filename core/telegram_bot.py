@@ -39,6 +39,7 @@ HELP = """<b>Ассистент</b> — ПК, телефон и роутер. П
 
 <b>Команды</b>
 /status — что на связи и какая модель
+/net — все устройства: LAN + Tailscale
 /models — выбрать модель ИИ кнопками
 /model ИМЯ — переключить сразу, например
 <code>/model opencode/mimo-v2.6-flash-free</code>
@@ -478,6 +479,8 @@ class Telegram:
             await self.send(chat_id, HELP, keyboard=panel_row() or None)
         elif command == "status":
             await self.status(chat_id)
+        elif command in {"net", "network", "сеть", "устройства"}:
+            await self.net_map(chat_id)
         elif command in {"models", "model"}:
             parts = text.split(None, 1)
             await self.models(chat_id, parts[1].strip() if len(parts) > 1 else "")
@@ -526,6 +529,67 @@ class Telegram:
             lines.append(f"{mark} {_esc(device.get('device_id'))} — "
                          f"{_esc(device.get('platform'))}, "
                          f"{len(device.get('available_actions', []))} команд")
+        await self.send(chat_id, "\n".join(lines))
+
+    async def net_map(self, chat_id: int) -> None:
+        """Карта сети: агенты ядра + всё на роутере + всё в Tailscale."""
+        try:
+            data = await self.core_call("GET", "/network")
+        except RuntimeError as exc:
+            await self.send(chat_id, f"⚠️ Ядро недоступно: {_esc(exc)}")
+            return
+
+        def _mark(ok: bool) -> str:
+            return "🟢" if ok else "⚪️"
+
+        def _client_line(client: dict) -> str:
+            name = client.get("hostname") or client.get("ip") or client.get("mac") or "?"
+            media = "📻" if client.get("wifi") else "🔌"
+            bits = [str(client.get("ip") or client.get("mac") or "")]
+            if client.get("signal"):
+                bits.append(f"📶 {client['signal']}")
+            return f"• {media} {_esc(name)} — {_esc(', '.join(b for b in bits if b))}"
+
+        lines: list[str] = ["🌐 <b>Карта сети</b>"]
+
+        lines.append(f"\n<b>Устройства ассистента:</b> "
+                     f"{data.get('assistants_online')} из {len(data.get('assistants') or [])}")
+        for device in data.get("assistants") or []:
+            lines.append(f"{_mark(bool(device.get('online')))} "
+                         f"{_esc(device.get('name') or device.get('device_id'))} "
+                         f"<i>({device.get('platform')})</i>")
+
+        lan = data.get("lan") or {}
+        lan_clients = lan.get("clients") or []
+        if lan_clients:
+            lines.append(f"\n📡 <b>Локальная сеть</b> ({_esc(lan.get('host', 'роутер'))}): "
+                         f"{len(lan_clients)} устройств "
+                         f"({lan.get('wifi', '?')} WiFi · {lan.get('wired', '?')} провод)")
+            for client in lan_clients[:14]:
+                lines.append(_client_line(client))
+            if len(lan_clients) > 14:
+                lines.append(f"… ещё {len(lan_clients) - 14}")
+
+        tailscale = data.get("tailscale") or {}
+        peers = tailscale.get("peers") or []
+        if peers:
+            self_info = tailscale.get("self") or {}
+            online_count = sum(1 for p in peers if p.get("online"))
+            lines.append(f"\n🛰 <b>Tailscale</b> ({_esc(self_info.get('ip') or 'self')}): "
+                         f"{online_count} из {len(peers)} онлайн")
+            for peer in peers[:14]:
+                state = "онлайн" if peer.get("online") else "не в сети"
+                os_name = f", {peer['os']}" if peer.get("os") else ""
+                lines.append(f"• {_mark(bool(peer.get('online')))} "
+                             f"{_esc(peer.get('name') or '?')} — "
+                             f"{_esc(peer.get('ip') or '—')} ({state}{os_name})")
+            if len(peers) > 14:
+                lines.append(f"… ещё {len(peers) - 14}")
+
+        for section, message in (data.get("errors") or {}).items():
+            lines.append(f"\n⚠️ {('Роутер' if section == 'lan' else 'Tailscale')}: "
+                         f"{_esc(message)}")
+
         await self.send(chat_id, "\n".join(lines))
 
     async def models(self, chat_id: int, argument: str = "") -> None:
@@ -707,6 +771,7 @@ class Telegram:
         commands = [
             {"command": "start", "description": "Начать и помощь"},
             {"command": "status", "description": "Состояние устройств и модели"},
+            {"command": "net", "description": "Все устройства: LAN + Tailscale"},
             {"command": "models", "description": "Выбрать модель ИИ"},
             {"command": "model", "description": "Переключить модель: /model имя"},
             {"command": "pending", "description": "Ожидающие подтверждения"},

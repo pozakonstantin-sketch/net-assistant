@@ -580,6 +580,34 @@ pre {
 }
 .status-pill.off { background: var(--warn-bg); color: var(--warn); }
 
+/* ─── карта сети: клиенты роутера и узлы Tailscale ─── */
+
+.net-section {
+  margin: 16px 2px 2px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.net-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--on-surface-variant);
+  padding: 2px 4px;
+}
+.net-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--outline-variant);
+  border-radius: 14px;
+  background: var(--surface-container);
+  cursor: pointer;
+}
+.net-row:active { background: var(--surface-container-high); }
+.net-row .device-icon.small { width: 34px; height: 34px; border-radius: 11px; }
+.net-row .device-icon.small svg { width: 17px; height: 17px; }
+
 /* ─────────────────────────── журнал ─────────────────────────── */
 
 .pending-list { display: flex; flex-direction: column; gap: 10px; }

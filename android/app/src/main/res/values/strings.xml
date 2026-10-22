@@ -9,14 +9,11 @@
     <string name="login_button">Войти</string>
     <string name="login_help">Токен — это ASSISTANT_TOKEN из файла .env на ВМ. Дома достаточно Wi-Fi, снаружи — Tailscale.</string>
     <string name="tab_chat">Чат</string>
-    <string name="tab_commands">Команды</string>
     <string name="tab_devices">Устройства</string>
     <string name="tab_audit">Журнал</string>
     <string name="tab_more">Ещё</string>
     <string name="chat_title">Чат с ИИ</string>
     <string name="chat_subtitle">Одна переписка на всех устройствах</string>
-    <string name="commands_title">Прямые команды</string>
-    <string name="commands_subtitle">Одно нажатие — и готово</string>
     <string name="devices_title">Устройства</string>
     <string name="devices_subtitle">Кто на связи прямо сейчас</string>
     <string name="audit_title">Журнал</string>

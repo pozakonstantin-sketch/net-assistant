@@ -110,7 +110,14 @@ def sys_screenshot(_args: dict) -> dict:
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError("нужен пакет pillow: pip install pillow") from exc
 
-    image = ImageGrab.grab(all_screens=True) if os.name == "nt" else ImageGrab.grab()
+    try:
+        image = ImageGrab.grab(all_screens=True) if os.name == "nt" else ImageGrab.grab()
+    except OSError as exc:
+        if _screen_locked():
+            raise RuntimeError(
+                "Снимок недоступен: экран заблокирован, рабочего стола нет. "
+                "Разблокируйте ПК и повторите.") from exc
+        raise RuntimeError(f"Снимок экрана не удался: {exc}") from exc
     buffer = io.BytesIO()
     image.save(buffer, format="PNG", optimize=True)
     raw = buffer.getvalue()
@@ -120,6 +127,25 @@ def sys_screenshot(_args: dict) -> dict:
         "height": image.height,
         "bytes": len(raw),
     }
+
+
+def _screen_locked() -> bool:
+    """Windows: рабочий стол недоступен (LogonUI = экран блокировки)."""
+    if os.name != "nt":
+        return False
+    return wmi_logonui()
+
+
+def wmi_logonui() -> bool:
+    try:
+        import subprocess
+
+        probe = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq LogonUI.exe", "/NH"],
+            capture_output=True, timeout=10, encoding="cp866", errors="replace")
+        return bool(probe.stdout) and "LogonUI.exe" in probe.stdout
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def sys_lock(_args: dict) -> dict:
@@ -364,8 +390,13 @@ def power_action(args: dict) -> dict:
             argv = ["shutdown", "-c"]
         else:
             raise ValueError(f"действие {action} не поддержано на этой ОС")
+    if os.name == "nt":
+        # вывод shutdown.exe локализованный, в консоли это cp866 — иначе кракозябры
+        console_encoding = "cp866"
+    else:
+        console_encoding = "utf-8"
     completed = subprocess.run(argv, capture_output=True, text=True,
-                               timeout=30, encoding="utf-8", errors="replace")
+                               timeout=30, encoding=console_encoding, errors="replace")
     return {"action": action, "delay_sec": delay, "exit_code": completed.returncode,
             "stdout": completed.stdout[:1000], "stderr": completed.stderr[:1000]}
 
@@ -434,11 +465,20 @@ def net_status(_args: dict) -> dict:
     except OSError as exc:
         result["addresses_error"] = str(exc)
 
-    ping_flag = "-n" if os.name == "nt" else "-c"
-    probe = subprocess.run(["ping", ping_flag, "1", "1.1.1.1"],
-                           capture_output=True, text=True, timeout=10, errors="ignore")
-    result["internet"] = probe.returncode == 0
-    result["ping_sample"] = probe.stdout.strip().splitlines()[-1:] or [""]
+    # Интернет проверяем TCP-подключением к 1.1.1.1:443 — без текстовых
+    # выводов ping (кодировки локали у Windows непредсказуемы, получались
+    # кракозябры в диалоге «Состояние сети» на телефоне).
+    started = time.perf_counter()
+    connected = False
+    try:
+        with socket.create_connection(("1.1.1.1", 443), timeout=4):
+            connected = True
+    except OSError:
+        connected = False
+    latency_ms = int((time.perf_counter() - started) * 1000) if connected else None
+    result["internet"] = connected
+    if latency_ms is not None:
+        result["latency_ms"] = latency_ms
     return result
 
 

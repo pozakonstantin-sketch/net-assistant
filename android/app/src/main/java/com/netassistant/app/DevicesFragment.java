@@ -61,50 +61,60 @@ public class DevicesFragment extends Fragment {
         load();
     }
 
+    /** Номер текущей загрузки: устаревшие ответы не применяем (были дубли). */
+    private int loadGen;
+
     private void load() {
+        final int gen = ++loadGen;
         Api.get(requireContext(), "/devices", new Api.Cb() {
             @Override
             public void ok(JSONObject body) {
-                devices.clear();
+                if (gen != loadGen || !isAdded()) {
+                    return; // устаревший ответ — на подходе более новый
+                }
+                List<Device> next = new ArrayList<>();
                 JSONArray arr = body.optJSONArray("devices");
-                if (arr != null) {
-                    for (int i = 0; i < arr.length(); i++) {
-                        try {
-                            JSONObject o = arr.getJSONObject(i);
-                            // available_actions — уже отфильтрованный по каталогу
-                            // список (как в веб-панели), а «actions» агентский
-                            // полный набор: команды из него ядро бы отклоняло.
-                            JSONArray acts = o.optJSONArray("available_actions");
-                            List<String> actsList = new ArrayList<>();
-                            if (acts != null) {
-                                for (int j = 0; j < acts.length(); j++) {
-                                    actsList.add(acts.getString(j));
-                                }
-                            }
-                            devices.add(new Device(o.optString("device_id", ""), o.optString("name", ""),
-                                    o.optString("platform", ""), o.optBoolean("online", false),
-                                    actsList, o.optDouble("last_seen", 0)));
-                        } catch (JSONException ignored) {
+                int agentCount = 0;
+                for (int i = 0; arr != null && i < arr.length(); i++) {
+                    try {
+                        JSONObject o = arr.getJSONObject(i);
+                        // available_actions — уже отфильтрованный по каталогу
+                        // список (как в веб-панели), а «actions» агентский
+                        // полный набор: команды из него ядро бы отклоняло.
+                        JSONArray acts = o.optJSONArray("available_actions");
+                        List<String> actsList = new ArrayList<>();
+                        for (int j = 0; acts != null && j < acts.length(); j++) {
+                            actsList.add(acts.getString(j));
                         }
+                        next.add(new Device(o.optString("device_id", ""), o.optString("name", ""),
+                                o.optString("platform", ""), o.optBoolean("online", false),
+                                actsList, o.optDouble("last_seen", 0)));
+                        agentCount++;
+                    } catch (JSONException ignored) {
                     }
+                }
+                if (agentCount > 0) {
+                    next.add(0, section("🤖 Агенты ассистента", agentCount));
                 }
                 // Дальше — вся сеть: клиенты роутера и узлы Tailscale
                 // (то же, что бот показывает по /net и ИИ видит через net.devices).
                 Api.get(requireContext(), "/network", new Api.Cb() {
                     @Override
                     public void ok(JSONObject net) {
-                        appendNetwork(net);
-                        adapter.notifyDataSetChanged();
-                        rootView.findViewById(R.id.devices_empty)
-                                .setVisibility(devices.isEmpty() ? View.VISIBLE : View.GONE);
+                        if (gen != loadGen || !isAdded()) {
+                            return;
+                        }
+                        List<Device> full = new ArrayList<>(next);
+                        appendNetwork(net, full);
+                        apply(full);
                     }
 
                     @Override
                     public void fail(String message) {
-                        // карта сети недоступна — показываем хотя бы агентов
-                        adapter.notifyDataSetChanged();
-                        rootView.findViewById(R.id.devices_empty)
-                                .setVisibility(devices.isEmpty() ? View.VISIBLE : View.GONE);
+                        if (gen != loadGen || !isAdded()) {
+                            return;
+                        }
+                        apply(next); // карта сети недоступна — показываем хотя бы агентов
                         Ui.toast(requireContext(), "Сеть: " + message);
                     }
                 });
@@ -112,18 +122,47 @@ public class DevicesFragment extends Fragment {
 
             @Override
             public void fail(String message) {
+                if (gen != loadGen || !isAdded()) {
+                    return;
+                }
+                apply(new ArrayList<>());
                 Ui.toast(requireContext(), "Устройства: " + message);
             }
         });
     }
 
-    /** Дозаполнить список устройствами из LAN и Tailscale. */
-    private void appendNetwork(JSONObject net) {
+    /** Атомарно подменить содержимое списка и перерисовать. */
+    private void apply(List<Device> next) {
+        devices.clear();
+        devices.addAll(next);
+        adapter.notifyDataSetChanged();
+        if (rootView != null) {
+            View empty = rootView.findViewById(R.id.devices_empty);
+            if (empty != null) {
+                empty.setVisibility(devices.isEmpty() ? View.VISIBLE : View.GONE);
+            }
+        }
+    }
+
+    private static Device section(String title, int count) {
+        return new Device("", title + " — " + count, "section", false,
+                new ArrayList<>(), 0);
+    }
+
+    /** Дописать в список устройства из LAN и Tailscale (+ секции-заголовки). */
+    private void appendNetwork(JSONObject net, List<Device> out) {
         if (net == null) return;
+        java.util.Set<String> used = new java.util.HashSet<>();
+        for (Device d : out) {
+            used.add(d.platform + "/" + d.deviceId);
+        }
+
+        // ── Локальная сеть: клиенты роутера (Wi‑Fi с сигналом / провод) ──
         JSONObject lan = net.optJSONObject("lan");
         JSONArray clients = lan != null ? lan.optJSONArray("clients") : null;
-        if (clients != null) {
+        if (clients != null && clients.length() > 0) {
             int limit = Math.min(clients.length(), 40);
+            List<Device> rows = new ArrayList<>();
             for (int i = 0; i < limit; i++) {
                 try {
                     JSONObject c = clients.getJSONObject(i);
@@ -131,25 +170,73 @@ public class DevicesFragment extends Fragment {
                     String ip = c.optString("ip", "");
                     String host = c.optString("hostname", "");
                     String id = !ip.isEmpty() ? ip : mac;
-                    String name = !host.isEmpty() && !"*".equals(host) ? host : id;
-                    String platform = c.optBoolean("wifi", false) ? "lan-wifi" : "lan-wired";
-                    devices.add(new Device(id, name, platform, true, new ArrayList<>(), 0));
+                    if (!used.add("net/" + id)) {
+                        continue; // такое устройство уже выведено
+                    }
+                    String name = !host.isEmpty() && !"*".equals(host) ? host : (id.isEmpty() ? mac : id);
+                    if (name.isEmpty()) {
+                        continue;
+                    }
+                    boolean wifi = c.optBoolean("wifi", false);
+                    String label2;
+                    if (wifi) {
+                        label2 = "Wi-Fi";
+                        String band = c.optString("band", "");
+                        String signal = c.optString("signal", "");
+                        if (!band.isEmpty()) {
+                            label2 += " " + band;
+                        }
+                        if (!signal.isEmpty()) {
+                            label2 += " · " + signal + " дБм";
+                        }
+                    } else {
+                        label2 = "Провод (LAN)";
+                    }
+                    String meta2 = "";
+                    if (!name.equals(ip) && !ip.isEmpty()) {
+                        meta2 = ip;
+                    }
+                    if (!mac.isEmpty()) {
+                        meta2 = meta2.isEmpty() ? mac : meta2 + " · " + mac;
+                    }
+                    rows.add(new Device(id, name, wifi ? "lan-wifi" : "lan-wired", true,
+                            new ArrayList<>(), 0, label2, meta2));
                 } catch (JSONException ignored) {
                 }
             }
+            if (!rows.isEmpty()) {
+                out.add(section("📡 Локальная сеть", rows.size()));
+                out.addAll(rows);
+            }
         }
+
+        // ── Tailscale-узлы ──
         JSONObject ts = net.optJSONObject("tailscale");
         JSONArray peers = ts != null ? ts.optJSONArray("peers") : null;
-        if (peers != null) {
+        if (peers != null && peers.length() > 0) {
             int limit = Math.min(peers.length(), 40);
+            List<Device> rows = new ArrayList<>();
             for (int i = 0; i < limit; i++) {
                 try {
                     JSONObject p = peers.getJSONObject(i);
-                    devices.add(new Device(p.optString("ip", ""), p.optString("name", "узел"),
-                            "tailscale", p.optBoolean("online", false),
-                            new ArrayList<>(), 0));
+                    String ip = p.optString("ip", "");
+                    if (!used.add("ts/" + ip)) {
+                        continue;
+                    }
+                    String name = p.optString("name", ip.isEmpty() ? "узел" : ip);
+                    String os = p.optString("os", "");
+                    String label2 = "Tailscale";
+                    if (!os.isEmpty()) {
+                        label2 += " · " + Character.toUpperCase(os.charAt(0)) + os.substring(1);
+                    }
+                    rows.add(new Device(ip, name, "tailscale", p.optBoolean("online", false),
+                            new ArrayList<>(), 0, label2, ip));
                 } catch (JSONException ignored) {
                 }
+            }
+            if (!rows.isEmpty()) {
+                out.add(section("🛰 Tailscale", rows.size()));
+                out.addAll(rows);
             }
         }
     }
@@ -163,9 +250,9 @@ public class DevicesFragment extends Fragment {
         if ("tailscale".equals(d.platform)) {
             kind = "Tailscale-узел";
         } else if ("lan-wifi".equals(d.platform)) {
-            kind = "WiFi-клиент";
+            kind = "Wi-Fi-клиент";
         } else {
-            kind = "Проводное устройство";
+            kind = "Проводное устройство (LAN)";
         }
         title.setText(d.name + "  ·  " + kind);
 
@@ -441,43 +528,403 @@ public class DevicesFragment extends Fragment {
     }
 
     private void showResult(String label, JSONObject resp) {
+        String title = label.replaceAll("^\\S+\\s", "");
         JSONObject result = resp.optJSONObject("result");
-        StringBuilder sb = new StringBuilder();
-        if (result == null || result.length() == 0) {
-            sb.append("Готово.");
-        } else {
-            JSONArray keys = result.names();
-            if (keys != null) {
-                for (int i = 0; i < keys.length(); i++) {
+        // Скриншоты ядро выносит в файл /shots/... — показываем картинкой,
+        // а не простынёй base64 (раньше это выглядело как «не работает»).
+        String imageUrl = result != null ? result.optString("url", "") : "";
+        if (imageUrl.contains("/shots/") || result != null && !result.optString("image_b64", "").isEmpty()) {
+            showImageDialog(title, result);
+            return;
+        }
+        new AlertDialog.Builder(requireContext())
+                .setTitle(title)
+                .setView(scrollableText(formatResult(result)))
+                .setPositiveButton("Закрыть", null)
+                .show();
+    }
+
+    /** Прокручиваемый текст — длинные ответы не режутся. */
+    private android.widget.ScrollView scrollableText(String text) {
+        android.widget.ScrollView sv = new android.widget.ScrollView(requireContext());
+        TextView tv = Ui.text(requireContext(), text, Ui.color(requireContext(), R.color.text),
+                14f, false, android.view.Gravity.START);
+        tv.setPadding(Ui.dp(requireContext(), 22), Ui.dp(requireContext(), 8),
+                Ui.dp(requireContext(), 22), 0);
+        tv.setTextIsSelectable(true);
+        sv.addView(tv);
+        return sv;
+    }
+
+    /** Диалог с картинкой результата (скриншоты ПК/ВМ/телефона). */
+    private void showImageDialog(String title, JSONObject result) {
+        // 1) готовая ссылка на файл, 2) на всякий — base64 прямо в ответе
+        String path = result.optString("url", "");
+        String b64 = result.optString("image_b64", "");
+        android.content.Context ctx = requireContext().getApplicationContext();
+        if (!b64.isEmpty()) {
+            byte[] bytes = android.util.Base64.decode(b64, android.util.Base64.DEFAULT);
+            finishImageDialog(title, ctx,
+                    android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.length),
+                    result.optInt("width", 0), result.optInt("height", 0));
+            return;
+        }
+        okhttp3.Request req = new okhttp3.Request.Builder()
+                .url(Api.url(requireContext(), path))
+                .header("Authorization", "Bearer " + new Prefs(requireContext()).token())
+                .build();
+        Api.client().newCall(req).enqueue(new okhttp3.Callback() {
+            @Override
+            public void onFailure(okhttp3.Call call, java.io.IOException e) {
+                Ui.toast(ctx, "Картинка недоступна: " + e.getMessage());
+            }
+
+            @Override
+            public void onResponse(okhttp3.Call call, okhttp3.Response response)
+                    throws java.io.IOException {
+                android.graphics.Bitmap bmp = null;
+                if (response.body() != null) {
+                    java.io.InputStream in = response.body().byteStream();
                     try {
-                        String key = keys.getString(i);
-                        String value;
-                        Object raw = result.opt(key);
-                        if (raw instanceof JSONObject) {
-                            value = ((JSONObject) raw).toString(2);
-                        } else if (raw instanceof JSONArray) {
-                            value = ((JSONArray) raw).toString();
-                        } else {
-                            value = String.valueOf(raw);
-                        }
-                        if (value.length() > 120) {
-                            value = value.substring(0, 120) + "…";
-                        }
-                        sb.append(key).append(": ").append(value).append("\n");
-                    } catch (JSONException ignored) {
+                        bmp = android.graphics.BitmapFactory.decodeStream(in);
+                    } finally {
+                        in.close();
                     }
                 }
+                final android.graphics.Bitmap finalBmp = bmp;
+                new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
+                    if (!isAdded() || finalBmp == null) {
+                        if (finalBmp == null) {
+                            Ui.toast(ctx, "Не удалось отобразить скриншот");
+                        }
+                        return;
+                    }
+                    finishImageDialog(title, ctx, finalBmp,
+                            finalBmp.getWidth(), finalBmp.getHeight());
+                });
+            }
+        });
+    }
+
+    private void finishImageDialog(String title, android.content.Context ctx,
+                                   android.graphics.Bitmap bmp, int w, int h) {
+        if (bmp == null) {
+            Ui.toast(ctx, "Не удалось отобразить скриншот");
+            return;
+        }
+        LinearLayout box = new LinearLayout(requireContext());
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(Ui.dp(requireContext(), 20), Ui.dp(requireContext(), 8),
+                Ui.dp(requireContext(), 20), 0);
+        android.widget.ImageView iv = new android.widget.ImageView(requireContext());
+        iv.setImageBitmap(bmp);
+        iv.setAdjustViewBounds(true);
+        iv.setMaxHeight(Ui.dp(requireContext(), 420));
+        iv.setScaleType(android.widget.ImageView.ScaleType.FIT_CENTER);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        box.addView(iv, lp);
+        TextView info = Ui.text(requireContext(),
+                w + "×" + h + " · " + (bmp.getByteCount() / 1024) + " КБ",
+                Ui.color(requireContext(), R.color.muted), 12f, false, android.view.Gravity.CENTER);
+        info.setPadding(0, Ui.dp(requireContext(), 6), 0, 0);
+        box.addView(info);
+        new AlertDialog.Builder(requireContext())
+                .setTitle(title)
+                .setView(box)
+                .setPositiveButton("Закрыть", null)
+                .show();
+    }
+
+    /* ─────────── человекочитаемый формат результатов команд ─────────── */
+
+    /** Весь результат → читаемый текст: подписи по-русски, списки строками. */
+    private String formatResult(JSONObject result) {
+        if (result == null || result.length() == 0) {
+            return "Готово.";
+        }
+        StringBuilder sb = new StringBuilder();
+        JSONArray keys = result.names();
+        for (int i = 0; keys != null && i < keys.length(); i++) {
+            try {
+                String key = keys.getString(i);
+                if ("url".equals(key) || "image_b64".equals(key)) {
+                    continue; // картинка показывается отдельно
+                }
+                String line = humanLine(key, result.opt(key));
+                if (!line.isEmpty()) {
+                    sb.append(line).append('\n');
+                }
+            } catch (JSONException ignored) {
             }
         }
         String text = sb.toString().trim();
+        if (text.isEmpty()) {
+            return "Готово.";
+        }
         if (text.length() > 3000) {
             text = text.substring(0, 3000) + "\n… (обрезано)";
         }
-        new AlertDialog.Builder(requireContext())
-                .setTitle(label.replaceAll("^\\S+\\s", ""))
-                .setMessage(text.isEmpty() ? "Готово." : text)
-                .setPositiveButton("Закрыть", null)
-                .show();
+        return text;
+    }
+
+    private static String firstOf(JSONObject o, String... keys) {
+        for (String k : keys) {
+            String v = o.optString(k, "");
+            if (!v.isEmpty() && !"null".equals(v)) {
+                return v;
+            }
+        }
+        return "";
+    }
+
+    /** Одна строка результата: «Отклик: 16 мс», «Аптайм: 5.1 ч» и т.п. */
+    private String humanLine(String key, Object raw) {
+        if (raw == null) {
+            return "";
+        }
+        String label = keyRu(key);
+        if (raw instanceof Boolean) {
+            boolean on = (Boolean) raw;
+            String word;
+            switch (key) {
+                case "internet": case "ok": case "up": word = on ? "есть" : "нет"; break;
+                default: word = on ? "да" : "нет";
+            }
+            return label + ": " + word;
+        }
+        if (raw instanceof JSONObject) {
+            return label + ":" + inlineObject((JSONObject) raw);
+        }
+        if (raw instanceof JSONArray) {
+            return label + ":" + listHuman(key, (JSONArray) raw);
+        }
+        String value = String.valueOf(raw).trim();
+        if (value.isEmpty() || "null".equals(value)) {
+            return "";
+        }
+        value = value.replace("\r", " ").replace("\n", " ").trim();
+        try {
+            if ("latency_ms".equals(key) || "avg_ms".equals(key)) {
+                value += " мс";
+            } else if ("uptime_hours".equals(key)) {
+                value += " ч";
+            } else if ("uptime_seconds".equals(key)) {
+                value = String.format(java.util.Locale.US, "%.1f дн.",
+                        Double.parseDouble(value) / 86400.0);
+            } else if ("total_kb".equals(key) || "used_kb".equals(key)) {
+                value = String.format(java.util.Locale.US, "%.1f ГБ",
+                        Double.parseDouble(value) / (1024.0 * 1024.0));
+            } else if ("memory_mb".equals(key)) {
+                value += " МБ";
+            } else if ("bytes".equals(key)) {
+                value = String.format(java.util.Locale.US, "%.0f КБ",
+                        Double.parseDouble(value) / 1024.0);
+            }
+        } catch (NumberFormatException ignored) {
+        }
+        return label + ": " + value;
+    }
+
+    /** JSONObject одной строкой «ключ: значение · ключ: значение». */
+    private String inlineObject(JSONObject o) {
+        StringBuilder sb = new StringBuilder();
+        JSONArray keys = o.names();
+        for (int i = 0; keys != null && i < keys.length(); i++) {
+            try {
+                String k = keys.getString(i);
+                if ("url".equals(k) || "image_b64".equals(k)) {
+                    continue;
+                }
+                Object raw = o.opt(k);
+                String value = raw instanceof Boolean
+                        ? ((Boolean) raw ? "да" : "нет")
+                        : String.valueOf(raw).replace("\n", " ").trim();
+                if (value.isEmpty()) {
+                    continue;
+                }
+                if (sb.length() > 0) {
+                    sb.append(" · ");
+                }
+                sb.append(keyRu(k)).append(": ").append(value);
+            } catch (JSONException ignored) {
+            }
+        }
+        String text = sb.toString();
+        if (text.length() > 240) {
+            text = text.substring(0, 240) + "…";
+        }
+        return text.isEmpty() ? " —" : " " + text;
+    }
+
+    /** JSONArray человечески: списки объектов — построчно, скаляры — через запятую. */
+    private String listHuman(String key, JSONArray arr) {
+        if (arr.length() == 0) {
+            return " нет";
+        }
+        if ("processes".equals(key)) {
+            StringBuilder sb = new StringBuilder();
+            int limit = Math.min(arr.length(), 15);
+            for (int i = 0; i < limit; i++) {
+                JSONObject p = arr.optJSONObject(i);
+                if (p == null) continue;
+                String name = p.optString("name", "?");
+                double mem = p.optDouble("memory_mb", 0);
+                sb.append('\n').append(" ").append(name)
+                        .append(" — ").append(String.format(java.util.Locale.US,
+                                mem >= 1 ? "%.0f МБ" : "%.1f МБ", mem));
+                int pid = p.optInt("pid", -1);
+                if (pid >= 0) {
+                    sb.append(" (PID ").append(pid).append(')');
+                }
+            }
+            if (arr.length() > limit) {
+                sb.append('\n').append(" …ещё ").append(arr.length() - limit);
+            }
+            return sb.toString();
+        }
+        if ("clients".equals(key)) {
+            StringBuilder sb = new StringBuilder();
+            int limit = Math.min(arr.length(), 15);
+            for (int i = 0; i < limit; i++) {
+                JSONObject c = arr.optJSONObject(i);
+                if (c == null) continue;
+                String ip = c.optString("ip", "");
+                String mac = c.optString("mac", "");
+                String who = !ip.isEmpty() ? ip : mac;
+                String host = c.optString("hostname", "");
+                if (!host.isEmpty() && !"*".equals(host)) {
+                    who += " (" + host + ")";
+                }
+                String kind = c.optBoolean("wifi", false)
+                        ? "Wi-Fi " + c.optString("band", "") + " · " + c.optString("signal", "") + " дБм"
+                        : "Провод";
+                sb.append('\n').append(" ").append(who).append(" — ").append(kind.trim());
+            }
+            if (arr.length() > limit) {
+                sb.append('\n').append(" …ещё ").append(arr.length() - limit);
+            }
+            return sb.toString();
+        }
+        if ("peers".equals(key)) {
+            StringBuilder sb = new StringBuilder();
+            int limit = Math.min(arr.length(), 15);
+            for (int i = 0; i < limit; i++) {
+                JSONObject p = arr.optJSONObject(i);
+                if (p == null) continue;
+                sb.append('\n').append(" ").append(p.optString("name", "?"))
+                        .append(" (").append(p.optString("ip", "")).append(')');
+                String os = p.optString("os", "");
+                if (!os.isEmpty()) {
+                    sb.append(" · ").append(os);
+                }
+                sb.append(p.optBoolean("online", false) ? " · онлайн" : " · не в сети");
+            }
+            if (arr.length() > limit) {
+                sb.append('\n').append(" …ещё ").append(arr.length() - limit);
+            }
+            return sb.toString();
+        }
+        // общий случай
+        List<String> parts = new ArrayList<>();
+        boolean dictItems = false;
+        for (int i = 0; i < arr.length(); i++) {
+            Object item = arr.opt(i);
+            if (item instanceof JSONObject) {
+                dictItems = true;
+                JSONObject o = (JSONObject) item;
+                String head = firstOf(o, "name", "hostname", "ip", "title", "window", "mount",
+                        "dns", "package", "iface");
+                if (head.isEmpty()) {
+                    parts.add(inlineObject(o));
+                } else {
+                    parts.add(head);
+                }
+            } else {
+                parts.add(String.valueOf(item));
+            }
+        }
+        if (dictItems) {
+            StringBuilder sb = new StringBuilder();
+            int limit = Math.min(parts.size(), 15);
+            for (int i = 0; i < limit; i++) {
+                sb.append('\n').append(" ").append(parts.get(i));
+            }
+            if (parts.size() > limit) {
+                sb.append('\n').append(" …ещё ").append(parts.size() - limit);
+            }
+            return sb.toString();
+        }
+        String joined = String.join(", ", parts);
+        if (joined.length() > 240) {
+            joined = joined.substring(0, 240) + "…";
+        }
+        return " " + joined;
+    }
+
+    /** Русские подписи полей результатов. */
+    private static String keyRu(String key) {
+        switch (key) {
+            case "host": return "Устройство";
+            case "os": return "ОС";
+            case "arch": return "Архитектура";
+            case "cpu_count": return "Ядер ЦП";
+            case "python": return "Python";
+            case "uptime_hours": return "Аптайм";
+            case "memory": return "Память";
+            case "addresses": return "Адреса";
+            case "address": return "Адрес";
+            case "latency_ms": return "Отклик";
+            case "internet": return "Интернет";
+            case "count": return "Всего";
+            case "total": return "Всего";
+            case "wifi": return "Wi-Fi";
+            case "wired": return "Проводом";
+            case "processes": return "Процессы";
+            case "clients": return "Клиенты";
+            case "peers": return "Узлы";
+            case "note": return "Справка";
+            case "action": return "Действие";
+            case "delay_sec": return "Задержка (сек)";
+            case "exit_code": return "Код выхода";
+            case "stdout": return "Вывод";
+            case "stderr": return "Сообщение системы";
+            case "uptime": return "Аптайм";
+            case "board": return "Плата";
+            case "model": return "Модель";
+            case "wan": return "WAN";
+            case "lan": return "LAN";
+            case "disks": return "Диски";
+            case "dns": return "DNS";
+            case "proxy": return "Прокси";
+            case "tailscale": return "Tailscale";
+            case "logs": return "Журнал";
+            case "summary": return "Итог";
+            case "load": return "Нагрузка";
+            case "target": return "Экран";
+            case "size": return "Размер";
+            case "density": return "Плотность";
+            case "screen": return "Экран";
+            case "foreground": return "Видно";
+            case "package": return "Приложение";
+            case "display": return "Дисплей";
+            case "windows": return "Окна";
+            case "total_gb": return "всего ГБ";
+            case "available_gb": return "свободно ГБ";
+            case "session": return "Сессия";
+            case "user": return "Пользователь";
+            case "version": return "Версия";
+            case "kernel": return "Ядро";
+            case "self": return "Этот узел";
+            case "checked_at": return "Проверено";
+            case "known": return "Известное";
+            case "title": return "Заголовок";
+            case "interface": return "Интерфейс";
+            case "uptime_days": return "Аптайм";
+            case "which": case "kind": return "Тип";
+            case "used_percent": return "Использовано";
+            default: return key;
+        }
     }
 
     private void runAction(String device, String action, JSONObject argsDef) {
@@ -710,15 +1157,26 @@ public class DevicesFragment extends Fragment {
         public final boolean online;
         public final List<String> actions;
         public final double lastSeen;
+        /** Своя подпись типа («Wi-Fi 2.4G · −60 дБм»); null — стандартная. */
+        public final String label2;
+        /** Дополнительная метка (IP/MAC) в третьей строке; null или пусто — нет. */
+        public final String meta2;
 
         Device(String deviceId, String name, String platform, boolean online,
                List<String> actions, double lastSeen) {
+            this(deviceId, name, platform, online, actions, lastSeen, null, null);
+        }
+
+        Device(String deviceId, String name, String platform, boolean online,
+               List<String> actions, double lastSeen, String label2, String meta2) {
             this.deviceId = deviceId;
             this.name = name;
             this.platform = platform;
             this.online = online;
             this.actions = actions;
             this.lastSeen = lastSeen;
+            this.label2 = label2;
+            this.meta2 = meta2;
         }
     }
 
@@ -793,12 +1251,26 @@ public class DevicesFragment extends Fragment {
             }
 
             void bind(Device d) {
+                if ("section".equals(d.platform)) {
+                    // Заголовок раздела: одна приглушённая строка, без карточки
+                    icon.setVisibility(View.GONE);
+                    dot.setVisibility(View.GONE);
+                    platform.setVisibility(View.GONE);
+                    meta.setVisibility(View.GONE);
+                    name.setText(d.name);
+                    name.setTextColor(Ui.color(c, R.color.muted));
+                    name.setTextSize(13f);
+                    row.setPadding(Ui.dp(c, 12), Ui.dp(c, 14), Ui.dp(c, 12), Ui.dp(c, 2));
+                    row.setOnClickListener(null);
+                    row.setClickable(false);
+                    return;
+                }
                 boolean netRow = d.platform.equals("lan-wifi") || d.platform.equals("lan-wired")
                         || d.platform.equals("tailscale");
                 int iconRes;
                 if (netRow) {
                     iconRes = d.platform.equals("lan-wired") ? R.drawable.device_pc
-                            : R.drawable.device_router;
+                            : R.drawable.device_wifi;
                 } else {
                     switch (d.platform) {
                         case "router": iconRes = R.drawable.device_router; break;
@@ -809,18 +1281,21 @@ public class DevicesFragment extends Fragment {
                     }
                 }
                 icon.setImageResource(iconRes);
+                icon.setVisibility(View.VISIBLE);
+                dot.setVisibility(View.VISIBLE);
                 name.setText(d.name);
+                name.setTextColor(Ui.color(c, R.color.text));
+                name.setTextSize(16f);
                 String label;
-                if ("tailscale".equals(d.platform)) {
+                if (d.label2 != null) {
+                    label = d.label2;
+                } else if ("tailscale".equals(d.platform)) {
                     label = "Tailscale-узел";
-                } else if ("lan-wifi".equals(d.platform)) {
-                    label = "Клиент WiFi";
-                } else if ("lan-wired".equals(d.platform)) {
-                    label = "Проводное устройство";
                 } else {
                     label = deviceRu(d.platform) + "  ·  " + d.actions.size() + " действий";
                 }
                 platform.setText(label);
+                platform.setVisibility(View.VISIBLE);
                 String status = d.online ? "в сети" : "не в сети";
                 if (d.lastSeen > 0 && d.online) {
                     long ago = (long) (System.currentTimeMillis() / 1000.0 - d.lastSeen);
@@ -830,8 +1305,13 @@ public class DevicesFragment extends Fragment {
                         status += " • " + ago + " с назад";
                     }
                 }
+                if (d.meta2 != null && !d.meta2.isEmpty()) {
+                    status += "  ·  " + d.meta2;
+                }
                 meta.setText(status);
+                meta.setVisibility(View.VISIBLE);
                 dot.setBackgroundResource(d.online ? R.drawable.bg_dot_online : R.drawable.bg_dot_offline);
+                row.setPadding(Ui.dp(c, 12), Ui.dp(c, 10), Ui.dp(c, 12), Ui.dp(c, 10));
                 row.setOnClickListener(v -> {
                     if (netRow) {
                         onInfo.accept(d);

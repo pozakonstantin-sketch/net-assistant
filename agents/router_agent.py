@@ -173,13 +173,25 @@ def _render(name: str, **values: str) -> str:
 
 
 def net_status(_args: dict) -> dict:
-    return {
-        "host": router.host,
-        "kind": router.kind,
-        "uptime": router.run(router.template("uptime")),
-        "board": router.run(router.template("board"))[:500],
-        "wan": router.run(router.template("wan"))[:800],
-    }
+    result: dict = {"host": router.host, "kind": router.kind}
+    result["uptime"] = router.run(router.template("uptime")).strip()
+    result["board"] = router.run(router.template("board")).strip()[:120]
+    # WAN: ключевые поля, а не сырой JSON обрезанный посередине
+    try:
+        wan = json.loads(router.run("ifstatus wan 2>/dev/null") or "{}")
+        if wan:
+            result["wan"] = {
+                "up": bool(wan.get("up")),
+                "ip": (wan.get("ipv4-address") or [{}])[0].get("address", ""),
+                "device": wan.get("l3_device", ""),
+                "uptime_days": round((wan.get("uptime") or 0) / 86400, 1),
+            }
+            route = (wan.get("route") or [])
+            if route:
+                result["wan"]["gateway"] = route[0].get("gateway", "")
+    except ValueError:
+        pass  # не OpenWrt-формат — не уточняем
+    return result
 
 
 def router_clients(_args: dict) -> dict:
@@ -225,6 +237,18 @@ def _wifi_blobs(lines: list[str]):
             if blob.count("{") == blob.count("}"):
                 yield blob, iface
                 buffer = []
+
+
+def _is_wan_side(ip: str, iface: str) -> bool:
+    """Запись ARP на WAN-интерфейсе или в CGNAT-диапазоне (100.64.0.0/10) —
+    это шлюз провайдера, а не устройство пользователя."""
+    if iface.startswith("eth"):
+        return True
+    try:
+        first, second = (int(p) for p in str(ip).split(".")[:2])
+    except (ValueError, AttributeError):
+        return False
+    return first == 100 and 64 <= second <= 127
 
 
 def _parse_clients(text: str) -> list[dict]:
@@ -283,6 +307,10 @@ def _parse_clients(text: str) -> list[dict]:
         ip, mac, iface = parts[0], parts[3].lower(), parts[5]
         if not MAC_RE.fullmatch(mac):
             continue
+        if _is_wan_side(ip, iface):
+            # WAN-сторона (например, CGNAT-шлюз провайдера на eth1) — не
+            # устройство пользователя и не место в карте сети.
+            continue
         entry: dict = {"ip": ip, "mac": mac, "iface": iface,
                        "wifi": mac in wifi}
         lease = leases.get(mac)
@@ -305,6 +333,8 @@ def _parse_clients(text: str) -> list[dict]:
         if mac in seen:
             continue
         lease = leases.get(mac)
+        if lease and _is_wan_side(lease["ip"], station["iface"]):
+            continue
         entry = {"mac": mac, "wifi": True, "iface": station["iface"]}
         if station.get("signal"):
             entry["signal"] = station["signal"]

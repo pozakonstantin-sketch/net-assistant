@@ -835,15 +835,47 @@ function appendMessage(role, text, executed, pending, ts) {
     const details = detailsBlock(executed);
     if (details) bubble.append(details);
     for (const item of executed) {
-      const url = item && item.result && item.result.url;
-      if (url) {
-        const image = el('img', 'msg-shot');
-        image.src = url;
-        image.alt = 'результат команды';
-        image.loading = 'lazy';
-        image.onclick = () => openViewer(url);
-        image.addEventListener('load', () => scrollBottom());
-        bubble.append(image);
+      const result = item && item.result;
+      if (result) {
+        // Картинки из web.fetch и других команд (массив images[])
+        if (Array.isArray(result.images) && result.images.length) {
+          for (const img of result.images) {
+            const url = img.local_path || img.url;
+            if (!url) continue;
+            const image = el('img', 'msg-shot');
+            image.src = url;
+            image.alt = img.alt || 'картинка';
+            image.loading = 'lazy';
+            image.onclick = () => openViewer(url);
+            image.addEventListener('load', () => scrollBottom());
+            bubble.append(image);
+          }
+        }
+        // Одиночный скриншот (sys.screenshot, vm.screenshot и т.д.)
+        else if (result.url && typeof result.url === 'string' && result.url.startsWith('/shots/')) {
+          const image = el('img', 'msg-shot');
+          image.src = result.url;
+          image.alt = 'скриншот';
+          image.loading = 'lazy';
+          image.onclick = () => openViewer(result.url);
+          image.addEventListener('load', () => scrollBottom());
+          bubble.append(image);
+        }
+        // Ссылки из web.fetch
+        if (Array.isArray(result.links) && result.links.length) {
+          const linksDiv = el('div', 'msg-links');
+          for (const link of result.links.slice(0, 10)) {
+            const a = el('a', 'msg-link', link.text || link.url);
+            a.href = link.url;
+            a.target = '_blank';
+            a.rel = 'noopener';
+            linksDiv.append(a);
+          }
+          if (result.links.length > 10) {
+            linksDiv.append(el('span', 'msg-link-more', `… и ещё ${result.links.length - 10}`));
+          }
+          bubble.append(linksDiv);
+        }
       }
     }
   }

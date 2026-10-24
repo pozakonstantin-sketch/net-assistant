@@ -654,16 +654,18 @@ public class ChatFragment extends Fragment {
                 int pad = Ui.dp(c, 12);
                 bubble.setPadding(pad, Ui.dp(c, 10), pad, Ui.dp(c, 10));
                 bubble.setLineSpacing(2f, 1.05f);
-                bubbles.addView(bubble, new LinearLayout.LayoutParams(
-                        user ? ViewGroup.LayoutParams.WRAP_CONTENT : ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT, user ? 0.8f : 1f));
-                ((LinearLayout.LayoutParams) bubble.getLayoutParams()).gravity = gravity;
+                // И user, и AI пузыри — WRAP_CONTENT с ограничением макс. ширины
+                int maxW = Ui.dp(c, user ? 280 : 340);
+                LinearLayout.LayoutParams bubbleLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                bubbleLp.gravity = gravity;
+                bubbles.addView(bubble, bubbleLp);
 
-                // executed actions
+                // executed actions + results (images, links)
                 if (m.executed != null) {
                     for (int i = 0; i < m.executed.length(); i++) {
                         try {
                             JSONObject e = m.executed.getJSONObject(i);
+                            // чип действия
                             TextView chip = Ui.text(c, "✅ " + e.optString("device", "") + " → " + e.optString("action", ""),
                                     Ui.color(c, R.color.secondary), 12f, true, gravity);
                             chip.setBackground(Ui.solid(Ui.color(c, R.color.chip), 10, c).mutate());
@@ -672,6 +674,90 @@ public class ChatFragment extends Fragment {
                             lp.topMargin = Ui.dp(c, 6);
                             lp.gravity = gravity;
                             bubbles.addView(chip, lp);
+
+                            // результат команды — картинки и ссылки
+                            JSONObject result = e.optJSONObject("result");
+                            if (result != null) {
+                                // Картинки (массив images[])
+                                JSONArray images = result.optJSONArray("images");
+                                if (images != null) {
+                                    for (int j = 0; j < images.length(); j++) {
+                                        try {
+                                            JSONObject img = images.getJSONObject(j);
+                                            String url = img.optString("local_path", img.optString("url", ""));
+                                            if (url.isEmpty()) continue;
+                                            ImageView iv = new ImageView(c);
+                                            iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
+                                            iv.setAdjustViewBounds(true);
+                                            int maxH = Ui.dp(c, 280);
+                                            iv.setMaxHeight(maxH);
+                                            iv.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+                                            ((LinearLayout.LayoutParams) iv.getLayoutParams()).gravity = gravity;
+                                            // Загрузка через Glide/Picasso не доступна — используем простую загрузку
+                                            String fullUrl = Api.base(c) + url;
+                                            new Thread(() -> {
+                                                try {
+                                                    java.net.URL u = new java.net.URL(fullUrl);
+                                                    android.graphics.Bitmap bmp = android.graphics.BitmapFactory.decodeStream(u.openStream());
+                                                    if (bmp != null) {
+                                                        requireActivity().runOnUiThread(() -> iv.setImageBitmap(bmp));
+                                                    }
+                                                } catch (Exception ignored) {}
+                                            }).start();
+                                            bubbles.addView(iv);
+                                        } catch (JSONException ignored) {}
+                                    }
+                                }
+                                // Одиночный скриншот (result.url)
+                                else if (result.has("url")) {
+                                    String url = result.optString("url", "");
+                                    if (url != null && url.startsWith("/shots/")) {
+                                        ImageView iv = new ImageView(c);
+                                        iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
+                                        iv.setAdjustViewBounds(true);
+                                        int maxH = Ui.dp(c, 280);
+                                        iv.setMaxHeight(maxH);
+                                        iv.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+                                        ((LinearLayout.LayoutParams) iv.getLayoutParams()).gravity = gravity;
+                                        String fullUrl = Api.base(c) + url;
+                                        new Thread(() -> {
+                                            try {
+                                                java.net.URL u = new java.net.URL(fullUrl);
+                                                android.graphics.Bitmap bmp = android.graphics.BitmapFactory.decodeStream(u.openStream());
+                                                if (bmp != null) {
+                                                    requireActivity().runOnUiThread(() -> iv.setImageBitmap(bmp));
+                                                }
+                                            } catch (Exception ignored) {}
+                                        }).start();
+                                        bubbles.addView(iv);
+                                    }
+                                }
+                                // Ссылки (links[])
+                                JSONArray links = result.optJSONArray("links");
+                                if (links != null && links.length() > 0) {
+                                    LinearLayout linksRow = new LinearLayout(c);
+                                    linksRow.setOrientation(LinearLayout.HORIZONTAL);
+                                    linksRow.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+                                    ((LinearLayout.LayoutParams) linksRow.getLayoutParams()).gravity = gravity;
+                                    for (int j = 0; j < Math.min(links.length(), 5); j++) {
+                                        try {
+                                            JSONObject link = links.getJSONObject(j);
+                                            String linkUrl = link.optString("url", "");
+                                            String linkText = link.optString("text", linkUrl);
+                                            if (linkUrl.isEmpty()) continue;
+                                            TextView tv = Ui.text(c, linkText, Ui.color(c, R.color.primary), 12f, true, gravity);
+                                            tv.setBackground(Ui.solid(0xFFE8EDF7, 12, c));
+                                            tv.setPadding(Ui.dp(c, 10), Ui.dp(c, 6), Ui.dp(c, 10), Ui.dp(c, 6));
+                                            tv.setOnClickListener(v -> {
+                                                android.content.Intent intent = new android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(linkUrl));
+                                                c.startActivity(intent);
+                                            });
+                                            linksRow.addView(tv);
+                                        } catch (JSONException ignored) {}
+                                    }
+                                    bubbles.addView(linksRow);
+                                }
+                            }
                         } catch (JSONException ignored) {
                         }
                     }

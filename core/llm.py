@@ -113,9 +113,11 @@ confirmations = Confirmations()
 # ───────────────────────────── вызов LLM ─────────────────────────────
 
 
-async def _chat(messages: list[dict], tools: list[dict] | None) -> dict:
+async def _chat_at(messages: list[dict], tools: list[dict] | None,
+                   base_url: str, api_key: str, model: str,
+                   timeout: float | None = None) -> dict:
     payload: dict = {
-        "model": settings.llm_model,
+        "model": model,
         "messages": messages,
         "temperature": 0.2,
     }
@@ -123,14 +125,43 @@ async def _chat(messages: list[dict], tools: list[dict] | None) -> dict:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
 
-    url = f"{settings.llm_base_url}/chat/completions"
-    headers = {"Authorization": f"Bearer {settings.llm_api_key}",
+    url = f"{base_url}/chat/completions"
+    headers = {"Authorization": f"Bearer {api_key}",
                "Content-Type": "application/json"}
-    async with httpx.AsyncClient(timeout=settings.llm_timeout) as client:
+    async with httpx.AsyncClient(timeout=timeout or settings.llm_timeout) as client:
         response = await client.post(url, json=payload, headers=headers)
         if response.status_code >= 400:
             raise RuntimeError(f"LLM ответила {response.status_code}: {response.text[:400]}")
         return response.json()
+
+
+async def _chat(messages: list[dict], tools: list[dict] | None) -> dict:
+    return await _chat_at(messages, tools, settings.llm_base_url,
+                          settings.llm_api_key, settings.llm_model)
+
+
+_SCHEMA_TYPES = {"int": "integer", "float": "number", "bool": "boolean",
+                 "str": "string", "any": "string"}
+
+
+def _json_schema_tools(tools: list[dict]) -> list[dict]:
+    """Привести схемы аргументов к каноничному JSON Schema.
+
+    Каталог команд использует короткие типы («int»), облачные API это прощают,
+    а llama.cpp генерирует грамматику строго по JSON Schema и отвечает
+    400 «unrecognized type int» на нестандартное имя типа.
+    """
+    off = [json.loads(json.dumps(t, ensure_ascii=False)) for t in tools]  # глубокая копия
+    stack: list = [((t.get("function") or {}).get("parameters") or {}) for t in off]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            if isinstance(node.get("type"), str):
+                node["type"] = _SCHEMA_TYPES.get(node["type"], node["type"])
+            stack.extend(v for v in node.values() if isinstance(v, (dict, list)))
+        elif isinstance(node, list):
+            stack.extend(v for v in node if isinstance(v, (dict, list)))
+    return off
 
 
 def _clean(message: dict) -> dict:
@@ -177,11 +208,49 @@ async def _execute(device: str, action: str, args: dict) -> dict:
 
 async def run_turn(user_text: str, history: list[dict]) -> dict:
     backend = active_backend()
-    if backend == "opencode":
-        return await planner.run_turn(user_text, history)
+    snapshot = list(history)  # fallback начинает с чистого слепка истории
+    remote_error: Exception | None = None
+    try:
+        if backend == "opencode":
+            return await planner.run_turn(user_text, history)
+        # openai-совместимый API: идём на удалённый провайдер
+        return await _turn_openai(user_text, history)
+    except (httpx.HTTPError, RuntimeError, LLMNotConfigured) as exc:
+        remote_error = exc
 
-    if not settings.llm_api_key:
-        raise LLMNotConfigured("не задан LLM_API_KEY в .env, а OpenCode недоступен")
+    # ── Резерв: локальная модель на ВМ (llama.cpp, 127.0.0.1) ──
+    try:
+        result = await _turn_openai(
+            user_text, list(snapshot),
+            base_url=settings.llm_local_url,
+            api_key="local", model=settings.llm_local_model,
+            timeout=240.0,
+        )
+        audit.write(event="llm_fallback", backend="local", ok=True)
+        result["reply"] = f"🧩 (резерв: локальная модель)\n{result.get('reply') or ''}"
+        return result
+    except (httpx.HTTPError, RuntimeError) as local_exc:
+        audit.write(event="llm_fallback", backend="local", ok=False,
+                    error=str(local_exc))
+        if remote_error is not None:
+            raise remote_error from local_exc
+        raise LLMNotConfigured(
+            "LLM недоступны: облачный провайдер недоступен, а локальной модели "
+            "нет на ВМ (нет службы net-assistant-llama)") from local_exc
+
+
+async def _turn_openai(user_text: str, history: list[dict],
+                       base_url: str | None = None, api_key: str | None = None,
+                       model: str | None = None, timeout: float | None = None) -> dict:
+    """Цикл planning-эксплуатации для любого OpenAI-совместимого API.
+
+    base_url=None — штатный облачный провайдер; иное — локальный резерв.
+    """
+    async def call(messages, tools):
+        if base_url is None:
+            return await _chat(messages, tools)
+        return await _chat_at(messages, _json_schema_tools(tools or []),
+                              base_url, api_key, model, timeout)
 
     if not any(m.get("role") == "system" for m in history):
         history.insert(0, {"role": "system", "content": SYSTEM_PROMPT})
@@ -193,7 +262,7 @@ async def run_turn(user_text: str, history: list[dict]) -> dict:
 
     for _ in range(MAX_STEPS):
         tools = hub.tools_for_llm()
-        data = await _chat(history, tools)
+        data = await call(history, tools)
         message = data["choices"][0]["message"]
         tool_calls = message.get("tool_calls") or []
         history.append(_clean(message))
@@ -242,7 +311,7 @@ async def run_turn(user_text: str, history: list[dict]) -> dict:
 
     history.append({"role": "user",
                     "content": "Лимит шагов исчерпан. Подведи итог для пользователя."})
-    data = await _chat(history, None)
+    data = await call(history, None)
     final = _clean(data["choices"][0]["message"])
     history.append(final)
     return {"reply": final.get("content", ""), "executed": executed, "pending": created}

@@ -40,6 +40,11 @@ class Settings:
     llm_model: str = os.getenv("LLM_MODEL", "deepseek-chat")
     llm_timeout: float = float(os.getenv("LLM_TIMEOUT", "60"))
 
+    # Резервная локальная модель на самой ВМ (llama.cpp server, только loopback).
+    # Используется, когда облако недоступно; сидит на 127.0.0.1 — наружу не светится.
+    llm_local_url: str = os.getenv("LLM_LOCAL_URL", "http://127.0.0.1:11331/v1").rstrip("/")
+    llm_local_model: str = os.getenv("LLM_LOCAL_MODEL", "qwen3-4b-instruct")
+
     # Планировщик на бесплатных моделях OpenCode (CLI внутри этой же машины).
     # backend: auto | opencode | openai
     llm_backend: str = os.getenv("LLM_BACKEND", "auto").strip().lower()

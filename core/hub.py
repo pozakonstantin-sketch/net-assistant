@@ -145,7 +145,7 @@ class Hub:
             future.set_result(message)
 
     async def _local(self, action: str, args: Any) -> dict:
-        """Действия самого ядра (файлы пользователя), без агента и сети."""
+        """Действия самого ядра (файлы пользователя, сеть, веб), без агента."""
         entry = catalog.get(action)
         if entry is None or catalog.CORE not in entry.get("devices", []):
             raise ValueError(f"команда «{action}» не разрешена каталогом")
@@ -166,6 +166,19 @@ class Hub:
             except network_view.NetworkError as exc:
                 audit.write(event="error", device=catalog.CORE, action=action, error=str(exc))
                 raise ValueError(str(exc)) from exc
+        elif action.startswith("web."):
+            from . import web_fetch
+
+            try:
+                if action == "web.fetch":
+                    result = web_fetch.web_fetch(**clean_args)
+                elif action == "web.search":
+                    result = web_fetch.web_search(**clean_args)
+                else:
+                    raise ValueError(f"неизвестная веб-команда: {action}")
+            except Exception as exc:  # noqa: BLE001
+                audit.write(event="error", device=catalog.CORE, action=action, error=str(exc))
+                raise ValueError(f"web: {exc}") from exc
         else:
             try:
                 result = await asyncio.to_thread(documents.core_action, action, clean_args)

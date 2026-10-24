@@ -516,6 +516,32 @@ CATALOG: dict[str, dict[str, Any]] = {
             "deliver": {"type": "bool", "default": False},
         },
     },
+
+    # ───────────────────────────── Веб-парсинг ─────────────────────────────
+    "web.fetch": {
+        "desc": ("Скачать веб-страницу и извлечь текст, заголовок, ссылки, картинки, meta-теги. "
+                 "Картинки сохраняются на SSD роутера/ВМ, возвращаются ссылки /shots/... "
+                 "Работает только с HTML (не JS-сайты)."),
+        "devices": [CORE],
+        "args": {
+            "url": {"type": "str", "required": True, "max_len": 2048,
+                    "description": "URL страницы (http/https)"},
+            "timeout": {"type": "int", "default": 30, "min": 5, "max": 120},
+            "images": {"type": "bool", "default": True,
+                       "description": "скачивать картинки"},
+            "max_text": {"type": "int", "default": 50000, "min": 1000, "max": 200000,
+                         "description": "макс. длина текста"},
+        },
+    },
+    "web.search": {
+        "desc": ("Поиск в DuckDuckGo (HTML scrape, без API ключей). "
+                 "Возвращает первые ссылки с заголовками."),
+        "devices": [CORE],
+        "args": {
+            "query": {"type": "str", "required": True, "max_len": 500},
+            "max_results": {"type": "int", "default": 10, "min": 1, "max": 50},
+        },
+    },
 }
 
 

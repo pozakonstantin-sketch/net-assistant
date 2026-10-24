@@ -29,7 +29,23 @@ const state = {
   recording: false,
   voice: localStorage.getItem('na_voice') === '1',
   screen: 'chat',
+  lastReadIndex: -1,
 };
+
+function getReadKey(session) {
+  return `na_read_${session}`;
+}
+
+function loadLastRead() {
+  if (!state.session) return;
+  const val = localStorage.getItem(getReadKey(state.session));
+  state.lastReadIndex = val ? parseInt(val, 10) : -1;
+}
+
+function saveLastRead() {
+  if (!state.session) return;
+  localStorage.setItem(getReadKey(state.session), String(state.lastReadIndex));
+}
 
 const SCREENS = {
   chat: { title: 'Ассистент', icon: 'edit', action: 'Новый диалог' },
@@ -235,6 +251,7 @@ async function boot() {
   if (!state.token) return showLogin();
 
   await pickSession();
+  loadLastRead();
   try {
     await refreshMeta(true);
   } catch (error) {
@@ -246,6 +263,11 @@ async function boot() {
   updateAppbar();
   syncVoiceToggle();
   startSync();
+  // Отслеживаем скролл в чате для lastReadIndex
+  const messagesBox = $('#messages');
+  if (messagesBox) {
+    messagesBox.addEventListener('scroll', () => updateLastReadFromVisible(), { passive: true });
+  }
   setInterval(() => {
     if (!document.hidden && !$('#app').classList.contains('hidden')) refreshMeta();
   }, 6000);
@@ -738,11 +760,36 @@ function renderHistory(messages) {
   for (const message of messages) {
     appendMessage(message.role, message.text, message.executed, message.pending, message.ts);
   }
-  if (distance > 120) {
-    // Пользователь читает старые сообщения — не дёргаем экран.
-    box.scrollTop = box.scrollHeight - box.clientHeight - distance;
-  } else {
+  // Скролл к первому непрочитанному (после lastReadIndex)
+  const targetIdx = state.lastReadIndex >= 0 && state.lastReadIndex < messages.length - 1
+    ? state.lastReadIndex + 1
+    : messages.length - 1;
+  const targetEl = box.children[targetIdx];
+  if (targetEl) {
+    targetEl.scrollIntoView({ behavior: 'instant', block: 'start' });
+  } else if (distance <= 120) {
     scrollBottom(true);
+  } else {
+    box.scrollTop = box.scrollHeight - box.clientHeight - distance;
+  }
+  // Обновляем lastReadIndex на основе видимости
+  updateLastReadFromVisible();
+}
+
+function updateLastReadFromVisible() {
+  const box = $('#messages');
+  const rect = box.getBoundingClientRect();
+  let maxVisible = -1;
+  for (let i = 0; i < box.children.length; i++) {
+    const child = box.children[i];
+    const childRect = child.getBoundingClientRect();
+    if (childRect.top >= rect.top && childRect.bottom <= rect.bottom) {
+      maxVisible = i;
+    }
+  }
+  if (maxVisible > state.lastReadIndex) {
+    state.lastReadIndex = maxVisible;
+    saveLastRead();
   }
 }
 
@@ -831,11 +878,48 @@ function detailsBlock(executed) {
   for (const item of executed) {
     const pre = el('pre');
     const status = item.ok === false ? 'ошибка' : 'ok';
-    const payload = item.result === undefined ? '' : JSON.stringify(item.result, null, 2);
-    pre.textContent = `${item.device || ''} :: ${item.action || ''} → ${status}\n${payload.slice(0, 1500)}`;
+    const payload = item.result === undefined ? '' : formatResult(item.result);
+    pre.textContent = `${item.device || ''} :: ${item.action || ''} → ${status}\n${payload}`;
     details.append(pre);
   }
   return details;
+}
+
+function formatResult(result) {
+  if (!result) return '';
+  if (typeof result === 'string') return result;
+  if (Array.isArray(result)) {
+    // Списки клиентов/процессов/пиров — красиво в строку
+    return result.map(r => formatItem(r)).join('\n');
+  }
+  if (typeof result === 'object') {
+    const lines = [];
+    for (const [key, val] of Object.entries(result)) {
+      if (val === undefined || val === null || val === '') continue;
+      if (key === 'stdout' || key === 'stderr') continue; // уже показано в actionsBlock
+      if (Array.isArray(val)) {
+        lines.push(`${key}: ${val.map(formatItem).join(', ')}`);
+      } else if (typeof val === 'object') {
+        lines.push(`${key}: ${formatResult(val)}`);
+      } else {
+        lines.push(`${key}: ${val}`);
+      }
+    }
+    return lines.join('\n');
+  }
+  return String(result);
+}
+
+function formatItem(item) {
+  if (item === null || item === undefined) return '';
+  if (typeof item === 'string') return item;
+  if (typeof item === 'object') {
+    // Поиск человекочитаемых полей
+    const name = item.name || item.hostname || item.ip || item.id || item.device_id || item.action || '';
+    const extra = item.signal ? ` (${item.signal})` : '';
+    return name + extra;
+  }
+  return String(item);
 }
 
 function pendingBlock(items) {

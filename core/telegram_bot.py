@@ -652,17 +652,59 @@ class Telegram:
         keyboard = self.keyboard(pending) if pending else None
         await self.send(chat_id, text, keyboard=keyboard, reply_to=reply_to)
 
+        # Подробности выполненных команд — человекочитаемо, не сырой JSON
         for item in executed:
             result = item.get("result") if isinstance(item.get("result"), dict) else {}
             url = result.get("url") if result else None
             if url and str(url).startswith("/shots/"):
                 await self.send_photo(chat_id, DATA_DIR / "shots" / Path(str(url)).name,
                                       caption=f"{item.get('device')}::{item.get('action')}")
+            elif item.get("ok") and result:
+                # Краткий человекочитаемый итог для успешных команд без скриншота
+                summary = self._format_result_summary(item.get("device"), item.get("action"), result)
+                if summary:
+                    await self.send(chat_id, f"📋 <b>{_esc(item.get('device'))} → {_esc(item.get('action'))}</b>\n{_esc(summary)}")
 
         # Озвучка — после текста: ответ не ждёт синтеза (он идёт ~2–5 секунд).
         audio = await self.voice_for(chat_id, text)
         if audio:
             await self.send_voice(chat_id, audio, reply_to=reply_to)
+
+    def _format_result_summary(self, device: str, action: str, result: dict) -> str:
+        """Краткий человекочитаемый итог результата команды."""
+        lines = []
+        # Типичные поля результатов
+        if "stdout" in result and result["stdout"]:
+            lines.append(str(result["stdout"]).strip()[:800])
+        if "stderr" in result and result["stderr"]:
+            lines.append("⚠️ " + str(result["stderr"]).strip()[:400])
+        if "clients" in result and isinstance(result["clients"], list):
+            # router.clients — список подключённых
+            clients = result["clients"]
+            if clients:
+                lines.append("Подключено: " + ", ".join(
+                    f"{c.get('hostname', c.get('ip', '?'))} ({'📶' if c.get('wifi') else '🔌'})"
+                    for c in clients[:10]
+                ))
+                if len(clients) > 10:
+                    lines.append(f"... и ещё {len(clients) - 10}")
+        if "peers" in result and isinstance(result["peers"], list):
+            # tailscale.peers
+            peers = result["peers"]
+            online = sum(1 for p in peers if p.get("online"))
+            lines.append(f"Tailscale: {online}/{len(peers)} онлайн")
+        if "uptime" in result:
+            lines.append(f"Аптайм: {result['uptime']}")
+        if "load" in result:
+            lines.append(f"Нагрузка: {result['load']}")
+        if "memory" in result:
+            lines.append(f"Память: {result['memory']}")
+        # Если специфичных полей нет — показываем ключи верхнего уровня
+        if not lines:
+            keys = [k for k in result.keys() if not k.startswith("_") and k not in {"ok", "exit_code"}]
+            if keys:
+                lines.append("Поля: " + ", ".join(keys[:8]))
+        return "\n".join(lines) if lines else ""
 
     @staticmethod
     def keyboard(pending: list) -> list:
@@ -856,15 +898,17 @@ class Telegram:
 
         Все устройства пишут в одну сессию (`canonical_session`), а этот цикл
         показывает в чате Telegram то, что пришло из веб-панели или мини-аппа.
-        Свои же сообщения (source=tg) не дублируем.
+        Свои же сообщения (source=tg) и системные не дублируем.
         """
         session = canonical_session()
-        last_ts = 0.0
+        # Используем комбинацию (ts, role, text[:50]) для дедупликации
+        seen: set[tuple] = set()
         try:
-            data = await self.core_call("GET", f"/history?session={session}&limit=1")
-            items = data.get("messages") or []
-            if items:
-                last_ts = float(items[-1].get("ts") or 0.0)
+            data = await self.core_call("GET", f"/history?session={session}&limit=200")
+            for item in data.get("messages") or []:
+                key = self._sync_key(item)
+                if key:
+                    seen.add(key)
         except RuntimeError:
             pass
 
@@ -876,12 +920,14 @@ class Telegram:
             except RuntimeError:
                 continue
             for item in data.get("messages") or []:
-                ts = float(item.get("ts") or 0.0)
-                if ts <= last_ts:
+                key = self._sync_key(item)
+                if not key or key in seen:
                     continue
-                last_ts = max(last_ts, ts)
+                seen.add(key)
                 if item.get("source") in {"tg", "schedule"}:
                     continue
+                if item.get("role") == "system":
+                    continue  # ошибки и служебное не пересылаем
                 text = str(item.get("text") or "").strip()
                 if not text:
                     continue
@@ -892,6 +938,15 @@ class Telegram:
                 elif item.get("role") == "assistant":
                     log.info("sync → Telegram: ответ ассистента для другого устройства")
                     await self.send(chat_id, _esc(text))
+
+    def _sync_key(self, item: dict) -> tuple | None:
+        """Уникальный ключ сообщения для дедупликации в sync_loop."""
+        ts = item.get("ts")
+        role = item.get("role")
+        text = str(item.get("text") or "").strip()
+        if ts is None or not role or not text:
+            return None
+        return (float(ts), role, text[:80])
 
     # ─────────────────────── адрес мини-приложения ───────────────────────
 

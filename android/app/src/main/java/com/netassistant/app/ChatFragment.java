@@ -47,6 +47,7 @@ import okhttp3.RequestBody;
 
 public class ChatFragment extends Fragment {
     private static final String STATE_AT_BOTTOM = "at_bottom";
+    private static final String STATE_LAST_READ_INDEX = "last_read_index";
 
     private RecyclerView messagesView;
     private EditText input;
@@ -66,6 +67,7 @@ public class ChatFragment extends Fragment {
     private String lastTtsText = "";
 
     private String session = "";
+    private int lastReadIndex = -1; // последний прочитанный индекс в items
 
     @Nullable
     @Override
@@ -77,6 +79,7 @@ public class ChatFragment extends Fragment {
     public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
         if (savedInstanceState != null) {
             atBottom = savedInstanceState.getBoolean(STATE_AT_BOTTOM, true);
+            lastReadIndex = savedInstanceState.getInt(STATE_LAST_READ_INDEX, -1);
         }
 
         messagesView = view.findViewById(R.id.messages);
@@ -94,8 +97,13 @@ public class ChatFragment extends Fragment {
             public void onScrolled(@NonNull RecyclerView rv, int dx, int dy) {
                 LinearLayoutManager lm = (LinearLayoutManager) rv.getLayoutManager();
                 if (lm != null) {
+                    int first = lm.findFirstCompletelyVisibleItemPosition();
                     int last = lm.findLastCompletelyVisibleItemPosition();
                     atBottom = last >= items.size() - 2;
+                    // Обновляем индекс последнего прочитанного — максимальный видимый
+                    if (last >= 0) {
+                        lastReadIndex = Math.max(lastReadIndex, last);
+                    }
                 }
             }
         });
@@ -111,6 +119,7 @@ public class ChatFragment extends Fragment {
     public void onSaveInstanceState(@NonNull Bundle outState) {
         super.onSaveInstanceState(outState);
         outState.putBoolean(STATE_AT_BOTTOM, atBottom);
+        outState.putInt(STATE_LAST_READ_INDEX, lastReadIndex);
     }
 
     @Override
@@ -166,14 +175,31 @@ public class ChatFragment extends Fragment {
         });
     }
 
+    private long lastHistoryStamp = -1; // messages.length + last_ts для детекции изменений
+
     private void loadHistory() {
         if (!isAdded()) return;
         Api.get(requireContext(), "/history?session=" + session + "&limit=200", new Api.Cb() {
             @Override
             public void ok(JSONObject body) {
                 if (!isAdded()) return;
-                items.clear();
                 JSONArray arr = body.optJSONArray("messages");
+                long stamp = 0;
+                if (arr != null) {
+                    stamp = arr.length();
+                    if (arr.length() > 0) {
+                        try {
+                            stamp += arr.getJSONObject(arr.length() - 1).optLong("ts", 0);
+                        } catch (JSONException ignored) {
+                        }
+                    }
+                }
+                if (stamp == lastHistoryStamp) {
+                    // История не изменилась — не перестраиваем список
+                    return;
+                }
+                lastHistoryStamp = stamp;
+                items.clear();
                 if (arr != null) {
                     for (int i = 0; i < arr.length(); i++) {
                         try {
@@ -183,8 +209,15 @@ public class ChatFragment extends Fragment {
                     }
                 }
                 adapter.notifyDataSetChanged();
-                if (atBottom && items.size() > 0) {
-                    messagesView.scrollToPosition(items.size() - 1);
+                // Скроллим к первому непрочитанному (после lastReadIndex), или вниз если всё прочитано
+                int target = -1;
+                if (lastReadIndex >= 0 && lastReadIndex < items.size() - 1) {
+                    target = lastReadIndex + 1;
+                } else if (atBottom && items.size() > 0) {
+                    target = items.size() - 1;
+                }
+                if (target >= 0) {
+                    messagesView.scrollToPosition(target);
                 }
                 status.setText("История синхронизирована (" + items.size() + " сообщений)");
             }
@@ -225,9 +258,7 @@ public class ChatFragment extends Fragment {
         sending = true;
         input.setEnabled(false);
         sendButton.setEnabled(false);
-        items.add(new Message("user", text, "", System.currentTimeMillis(), null, null, null));
-        adapter.notifyItemInserted(items.size() - 1);
-        messagesView.scrollToPosition(items.size() - 1);
+        // Не добавляем локально — ждём ответа сервера, чтобы избежать дублей при поллинге
         input.setText("");
 
         JSONObject body = new JSONObject();
@@ -253,10 +284,6 @@ public class ChatFragment extends Fragment {
                 sending = false;
                 input.setEnabled(true);
                 sendButton.setEnabled(true);
-                if (!items.isEmpty() && items.get(items.size() - 1).role.equals("user") && items.get(items.size() - 1).text.equals(text)) {
-                    items.remove(items.size() - 1);
-                    adapter.notifyItemRemoved(items.size());
-                }
                 Ui.toast(requireContext(), "Не удалось отправить: " + message);
             }
         });

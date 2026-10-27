@@ -115,12 +115,20 @@ confirmations = Confirmations()
 
 async def _chat_at(messages: list[dict], tools: list[dict] | None,
                    base_url: str, api_key: str, model: str,
-                   timeout: float | None = None) -> dict:
+                   timeout: float | None = None,
+                   max_tokens: int | None = None,
+                   no_think: bool = False) -> dict:
     payload: dict = {
         "model": model,
         "messages": messages,
         "temperature": 0.2,
     }
+    if max_tokens:
+        payload["max_tokens"] = max_tokens
+    if no_think:
+        # Отключить скрытый ход мыслей: иначе qwen3 тратит весь бюджет
+        # токенов на <think>…</think>, пользователю приходит пустой ответ.
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
     if tools:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
@@ -132,12 +140,57 @@ async def _chat_at(messages: list[dict], tools: list[dict] | None,
         response = await client.post(url, json=payload, headers=headers)
         if response.status_code >= 400:
             raise RuntimeError(f"LLM ответила {response.status_code}: {response.text[:400]}")
-        return response.json()
+        data = response.json()
+        try:
+            ch = data["choices"][0]
+            msg = ch.get("message") or {}
+            usage = data.get("usage") or {}
+            log.info("llm: finish=%s tool_calls=%d content_len=%d prompt_tok=%s gen_tok=%s",
+                     ch.get("finish_reason"), len(msg.get("tool_calls") or []),
+                     len(msg.get("content") or ""), usage.get("prompt_tokens"),
+                     usage.get("completion_tokens"))
+        except Exception:
+            log.warning("llm: непонятный ответ: %s", str(data)[:300])
+        return data
+
+
+def _is_local(base_url: str | None) -> bool:
+    return bool(base_url) and ("127.0.0.1" in base_url or "localhost" in base_url)
+
+
+def _trim_history(history: list[dict], max_messages: int = 6,
+                  max_chars: int = 3500) -> list[dict]:
+    """Короткий контекст для локальной модели: ВМ обрабатывает промпт минутами."""
+    def size(items):
+        return sum(len(str(m.get("content", ""))) for m in items)
+
+    # наблюдения инструментов объёмны: оставляем только два последних
+    tool_idx = [i for i, m in enumerate(history) if m.get("role") == "tool"]
+    drop_idx = set(tool_idx[:-2])
+    slim = [m for i, m in enumerate(history) if i not in drop_idx]
+
+    items = slim[-max_messages:]
+    while len(items) > 2 and size(items) > max_chars:
+        items = items[1:]
+    while items and items[0].get("role") == "tool":
+        items = items[1:]
+    return items
 
 
 async def _chat(messages: list[dict], tools: list[dict] | None) -> dict:
-    return await _chat_at(messages, tools, settings.llm_base_url,
-                          settings.llm_api_key, settings.llm_model)
+    # Нормализация схемы и короткие ответы для локальной модели:
+    # llama.cpp строг к типам («int» → «integer») и медленно генерирует.
+    if _is_local(settings.llm_base_url):
+        mt, to = 700, 600.0  # ВМ обрабатывает промпт минутами
+    else:
+        mt, to = None, None
+    tools = _json_schema_tools(tools or [])
+    if mt is not None:
+        tools = _compact_tools(tools)
+    return await _chat_at(messages, tools,
+                          settings.llm_base_url,
+                          settings.llm_api_key, settings.llm_model,
+                          timeout=to, max_tokens=mt, no_think=mt is not None)
 
 
 _SCHEMA_TYPES = {"int": "integer", "float": "number", "bool": "boolean",
@@ -162,6 +215,27 @@ def _json_schema_tools(tools: list[dict]) -> list[dict]:
         elif isinstance(node, list):
             stack.extend(v for v in node if isinstance(v, (dict, list)))
     return off
+
+
+def _compact_tools(tools: list[dict]) -> list[dict]:
+    """Короткие описания инструментов для локальной модели.
+
+    Полные описания каталога дают ~8-10 тыс. токенов промпта, а ВМ
+    обрабатывает их по 15 токенов/с — ход занимает десятки минут.
+    """
+    out: list[dict] = []
+    for t in tools:
+        t = json.loads(json.dumps(t, ensure_ascii=False))
+        fn = t.get("function") or {}
+        full = fn.get("description") or ""
+        short = full.split(". ")[0].strip()
+        if "ОПАСНО" in full:
+            short += " (ОПАСНО)"
+        if len(short) > 120:
+            short = short[:117] + "…"
+        fn["description"] = short
+        out.append(t)
+    return out
 
 
 def _clean(message: dict) -> dict:
@@ -208,13 +282,19 @@ async def _execute(device: str, action: str, args: dict) -> dict:
 
 async def run_turn(user_text: str, history: list[dict]) -> dict:
     backend = active_backend()
+    max_steps: int | None = None
+    if backend == "openai" and _is_local(settings.llm_base_url):
+        # Локальная llama как основной планировщик: короткий контекст и
+        # минимум шагов, иначе ход занимает десятки минут.
+        history = _trim_history(history)
+        max_steps = 2
     snapshot = list(history)  # fallback начинает с чистого слепка истории
     remote_error: Exception | None = None
     try:
         if backend == "opencode":
             return await planner.run_turn(user_text, history)
         # openai-совместимый API: идём на удалённый провайдер
-        return await _turn_openai(user_text, history)
+        return await _turn_openai(user_text, history, max_steps=max_steps)
     except (httpx.HTTPError, RuntimeError, LLMNotConfigured) as exc:
         remote_error = exc
 
@@ -224,7 +304,7 @@ async def run_turn(user_text: str, history: list[dict]) -> dict:
             user_text, list(snapshot),
             base_url=settings.llm_local_url,
             api_key="local", model=settings.llm_local_model,
-            timeout=240.0,
+            timeout=480.0, max_steps=2, max_tokens=400,
         )
         audit.write(event="llm_fallback", backend="local", ok=True)
         result["reply"] = f"🧩 (резерв: локальная модель)\n{result.get('reply') or ''}"
@@ -241,7 +321,9 @@ async def run_turn(user_text: str, history: list[dict]) -> dict:
 
 async def _turn_openai(user_text: str, history: list[dict],
                        base_url: str | None = None, api_key: str | None = None,
-                       model: str | None = None, timeout: float | None = None) -> dict:
+                       model: str | None = None, timeout: float | None = None,
+                       max_steps: int | None = None,
+                       max_tokens: int | None = None) -> dict:
     """Цикл planning-эксплуатации для любого OpenAI-совместимого API.
 
     base_url=None — штатный облачный провайдер; иное — локальный резерв.
@@ -250,7 +332,8 @@ async def _turn_openai(user_text: str, history: list[dict],
         if base_url is None:
             return await _chat(messages, tools)
         return await _chat_at(messages, _json_schema_tools(tools or []),
-                              base_url, api_key, model, timeout)
+                              base_url, api_key, model, timeout,
+                              max_tokens=max_tokens, no_think=True)
 
     if not any(m.get("role") == "system" for m in history):
         history.insert(0, {"role": "system", "content": SYSTEM_PROMPT})
@@ -260,8 +343,9 @@ async def _turn_openai(user_text: str, history: list[dict],
     executed: list[dict] = []
     created: list[dict] = []
 
-    for _ in range(MAX_STEPS):
+    for step in range(max_steps or MAX_STEPS):
         tools = hub.tools_for_llm()
+        log.info("turn %s: шаг %d/%d, инструментов=%d", user_text[:40], step + 1, max_steps or MAX_STEPS, len(tools))
         data = await call(history, tools)
         message = data["choices"][0]["message"]
         tool_calls = message.get("tool_calls") or []
@@ -274,11 +358,11 @@ async def _turn_openai(user_text: str, history: list[dict],
                 "pending": created,
             }
 
-        for call in tool_calls:
-            call_id = call.get("id", "call_0")
+        for tc in tool_calls:
+            call_id = tc.get("id", "call_0")
             try:
                 device, action, args = _parse_tool(
-                    call["function"]["name"], call["function"].get("arguments", "")
+                    tc["function"]["name"], tc["function"].get("arguments", "")
                 )
             except (KeyError, ValueError) as exc:
                 history.append({"role": "tool", "tool_call_id": call_id,
